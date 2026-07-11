@@ -16,6 +16,7 @@ from pathlib import Path
 import platform
 import resource
 import sys
+from statistics import median
 from time import perf_counter
 from typing import Any, Callable, TypeVar
 
@@ -68,6 +69,15 @@ def _environment() -> dict[str, Any]:
         "platform": platform.platform(),
         "processor": platform.processor(),
         "cpu_count": os.cpu_count(),
+        "thread_environment": {
+            name: os.environ.get(name)
+            for name in (
+                "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS",
+            )
+        },
         "packages": {
             name: _version(name)
             for name in (
@@ -86,6 +96,45 @@ def _relative_residual(matrix, solution: np.ndarray, rhs: np.ndarray) -> float:
     residual = np.linalg.norm(matrix @ solution - rhs)
     scale = max(np.linalg.norm(rhs), np.finfo(np.float64).tiny)
     return float(residual / scale)
+
+
+def _total_timed_seconds(run: dict[str, Any]) -> float:
+    return float(sum(run.get("timings_s", {}).values()))
+
+
+def _summarize_runs(
+    runs: list[dict[str, Any]], *, includes_cold_start: bool = True
+) -> dict[str, Any]:
+    """Keep cold-start and steady-state timings visibly separate."""
+    if not runs:
+        return {}
+    summary: dict[str, Any] = {"recorded_runs": len(runs)}
+    if includes_cold_start:
+        cold = runs[0]
+        steady = runs[1:]
+        summary.update(
+            {
+                "cold_total_s": _total_timed_seconds(cold),
+                "cold_linear_solve_s": cold.get("timings_s", {}).get(
+                    "linear_solve"
+                ),
+            }
+        )
+    else:
+        steady = runs
+    if steady:
+        summary.update(
+            {
+                "steady_runs": len(steady),
+                "steady_total_median_s": median(
+                    _total_timed_seconds(run) for run in steady
+                ),
+                "steady_linear_solve_median_s": median(
+                    run["timings_s"]["linear_solve"] for run in steady
+                ),
+            }
+        )
+    return summary
 
 
 def benchmark_cartesian(
@@ -294,6 +343,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=23_349)
     parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=0,
+        help="discard this many complete runs before recording --repeat runs",
+    )
     parser.add_argument("--solver", default="scipy-spsolve")
     parser.add_argument("--rtol", type=float, default=1e-10)
     parser.add_argument("--r-inner", type=float, default=1.0)
@@ -317,6 +372,8 @@ def main() -> int:
         return 0
     if args.repeat < 1:
         raise ValueError("--repeat must be at least 1.")
+    if args.warmup < 0:
+        raise ValueError("--warmup cannot be negative.")
 
     if args.geometry == "cartesian":
         gaps = build_cartesian_case(args.case, args.size, seed=args.seed)
@@ -341,6 +398,10 @@ def main() -> int:
         )
         shape = list(gaps.shape)
 
+    for _ in range(args.warmup):
+        run()
+        gc.collect()
+
     runs = []
     for _ in range(args.repeat):
         runs.append(run())
@@ -356,6 +417,7 @@ def main() -> int:
             "shape": shape,
             "seed": args.seed,
             "repeat": args.repeat,
+            "warmup": args.warmup,
             "solver": args.solver,
             "rtol": args.rtol,
             "compact_system": not args.full_grid_system,
@@ -366,6 +428,9 @@ def main() -> int:
             ),
         },
         "runs": runs,
+        "summary": _summarize_runs(
+            runs, includes_cold_start=args.warmup == 0
+        ),
     }
     serialized = json.dumps(report, indent=2, sort_keys=True)
 

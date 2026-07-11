@@ -368,3 +368,5 @@ solver registry ------------ direct CSR assembly
 - 2026-07-10: Added subprocess-isolated native-backend checks, a Python 3.10–3.12 CI matrix, version 0.1.0 metadata/changelog, deterministic performance report, and source/wheel manifests.
 - 2026-07-10: Added configurable Cartesian reservoir pressures (`p_west`, `p_east`) across one-shot and prepared APIs.
 - 2026-07-10: Release-candidate safe suite: 61 passed and nine explicit slow/backend skips. Source and wheel distributions build successfully; the wheel was smoke-tested from an isolated virtual environment.
+- 2026-07-11: Corrected the MKL Pardiso SPD interface to pass one matrix triangle; the former full-symmetric input could segfault on the `512 x 512` case.
+- 2026-07-11: Added a subprocess-isolated all-backend performance suite with controlled thread counts and separate cold-start and steady-state reporting. All nine canonical backends completed the `512 x 512` circle case in the `fluidpaper` environment.

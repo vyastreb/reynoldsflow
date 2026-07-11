@@ -90,6 +90,10 @@ Base dependencies include NumPy, SciPy, Numba, scikit-image, and PyAMG. `pypardi
 
 Solver parsing and aliases are centralized in `_linear_solvers.py`. `scipy-spsolve` is implemented. Unknown names, unavailable explicit backends, and non-convergence raise explicit ReynoldsFlow errors.
 
+The Pardiso backend declares the operator as real SPD (`mtype=2`) and must pass
+only one matrix triangle to MKL. Passing the complete symmetric CSR matrix can
+segfault below Python on larger problems.
+
 Both geometry matrices are symmetric and share the same CG-capable backend layer. PETSc remains an opt-in environment-specific backend.
 
 ## Validation commands
@@ -114,13 +118,21 @@ python -m pytest -q --run-slow --run-backend -m backend
 python -m pytest -q --run-benchmark -m benchmark
 ```
 
+Run every canonical backend in a crash-isolated, thread-controlled performance
+suite with:
+
+```bash
+python -m benchmarks.benchmark_suite \
+  --case circle --size 512 --rtol 1e-8 --repeat 3 --threads 1
+```
+
 The original analytical subset can still be run with:
 
 ```bash
 python -m pytest -q tests/analytical_test.py
 ```
 
-All four analytical tests passed in the inspected baseline. They directly solve the assembled matrices with SciPy and cover constant and linearly varying gaps in Cartesian and polar coordinates. Additional unit tests cover conservative Cartesian/polar face flux, matrix symmetry, periodic connectivity, multiple spanning channels, sector quadrature, and single-sample angular extent. Tests do **not** yet fully exercise dilation, iterative convergence, or optional backends.
+All four analytical tests passed in the inspected baseline. They directly solve the assembled matrices with SciPy and cover constant and linearly varying gaps in Cartesian and polar coordinates. Additional unit tests cover conservative Cartesian/polar face flux, matrix symmetry, periodic connectivity, multiple spanning channels, sector quadrature, single-sample angular extent, iterative convergence diagnostics, and solver aliases. Optional native backends are exercised in subprocess-isolated opt-in integration tests. Dilation remains only partially covered.
 
 The large Pardiso example, evolution run, and optional-solver sweep require explicit flags and an environment with the intended backend and memory budget. `tests/polar_flow.py` remains a separate manual workload.
 
@@ -130,7 +142,8 @@ For optimization work, record both elapsed time and peak RSS, separate stages (c
 
 Treat these as issues to test before or while optimizing, not as behavior to preserve blindly:
 
-- Cartesian public input validation does not reject non-2D, rectangular, too-small, NaN, or nonnumeric arrays; most internals assume square shape and `n >= 2`.
+- Public input validation rejects non-2D, rectangular, too-small, nonnumeric,
+  NaN, and infinite gap fields before numerical kernels run.
 - Connectivity now retains all spanning labels with shared union-find seam merging. Further optimization must preserve this multi-channel behavior.
 - Cartesian assembly and flux reconstruction now share a cell-centered finite-volume convention and conservative face conductivities.
 - Polar symmetry-sector integration uses endpoint half weights, and `n_theta=1` uses `theta_extent`.

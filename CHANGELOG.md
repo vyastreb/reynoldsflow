@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Pass only the upper triangle to MKL Pardiso's symmetric-positive-definite
+  interface. Passing the complete symmetric matrix could segfault on larger
+  systems.
+- Release each Pardiso factorization workspace after a one-shot solve.
+
+### Benchmarks and tests
+
+- Added a subprocess-isolated suite for all canonical linear solvers, with
+  per-worker crash/timeout reporting and controlled native thread counts.
+- Separated cold-start timings from steady-state medians and added discarded
+  warmup runs.
+- Added regressions for the Pardiso SPD storage contract and benchmark summary
+  semantics.
+
 ## 0.1.0 — 2026-07-10
 
 ### Numerical correctness

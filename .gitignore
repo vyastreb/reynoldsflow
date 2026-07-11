@@ -19,4 +19,5 @@ src/reynoldsflow.egg-info/
 dist/
 build/
 tests/test_solvers.result
+/test_solvers.result
 benchmarks/results/
