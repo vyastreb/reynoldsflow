@@ -1,50 +1,34 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- Pass only the upper triangle to MKL Pardiso's symmetric-positive-definite
-  interface. Passing the complete symmetric matrix could segfault on larger
-  systems.
-- Release each Pardiso factorization workspace after a one-shot solve.
-- Removed the unsupported PETSc ILU configuration and its misleading legacy
-  alias from the solver registry and benchmark suite.
-
-### Benchmarks and tests
-
-- Added a subprocess-isolated suite for all canonical linear solvers, with
-  per-worker crash/timeout reporting and controlled native thread counts.
-- Separated cold-start timings from steady-state medians and added discarded
-  warmup runs.
-- Added regressions for the Pardiso SPD storage contract and benchmark summary
-  semantics.
-- Added CPU model, BLAS, and optional direct-backend versions to benchmark
-  environment metadata.
-
-## 0.1.0 — 2026-07-10
+## 0.1.0 — 2026-07-11
 
 ### Numerical correctness
 
-- Replaced Cartesian boundary and flux postprocessing with a consistent
+- Replaced the Cartesian boundary and flux treatment with a consistent
   cell-centered finite-volume formulation.
-- Added conservative face fluxes in Cartesian and polar geometries.
-- Row-scaled the polar operator to a symmetric stored form.
-- Corrected polar sector quadrature and single-sample angular extent.
-- Removed implicit polar channel dilation; dilation is now an explicit option.
+- Added conservative Cartesian and polar face fluxes derived from the same
+  conductances used by matrix assembly.
+- Row-scaled the polar operator to a symmetric stored form and corrected
+  annular/symmetry-sector flux integration.
+- Removed implicit polar channel dilation; dilation is now an explicit geometry
+  modification.
 - Retained every independent spanning component across periodic seams.
-- Tightened the default iterative tolerance to `1e-12` based on direct
-  total-flow comparisons on constricted fields.
+- Tightened the default iterative tolerance to `1e-12` after direct total-flow
+  calibration on constricted rough fields.
 
-### Performance
+### Sparse systems and performance
 
-- Removed unused full-grid Cartesian coordinate allocations and import-time JIT
+- Added compact active-cell DOF mappings and eliminated blocked identity rows.
+- Replaced overallocated COO triplets with exact-size two-pass CSR assembly.
+- Removed unused Cartesian coordinate grids and automatic import-time Numba
   compilation.
-- Added compact active-cell DOF mappings for partially blocked domains.
-- Replaced overallocated COO triplets and format conversion with exact-size,
-  two-pass CSR assembly.
-- Added prepared Cartesian and polar problems for fixed-topology sequences.
-- Added opt-in AMG hierarchy reuse with convergence and residual checks.
+- Added deterministic staged, scaling, and subprocess-isolated solver
+  benchmarks with separate cold and steady timing.
+- Added machine, BLAS, native thread, backend-version, residual, iteration,
+  conservation, and peak-RSS metadata to benchmark reports.
+- Added the reproducible v0.1.0 rough-contact CPU/RAM scaling dataset through
+  `4096 x 4096` grid points (10.7 million active DOFs) and its generated
+  figure.
 
 ### Solvers and API
 
@@ -52,13 +36,23 @@
 - Implemented `scipy-spsolve` as a portable direct reference backend.
 - Made `auto` reliably select base SciPy/PyAMG; native backends are explicit.
 - Added explicit invalid-input, unavailable-backend, unknown-solver, and
-  convergence errors. `None` results are reserved for no percolation.
-- Added finite input and geometry validation.
-- Added configurable Cartesian `p_west` and `p_east` reservoir pressures while
-  preserving `0` and `1` defaults.
+  convergence errors. `None` results are reserved for normal no-percolation.
+- Added configurable Cartesian `p_west` and `p_east` reservoir pressures.
+- Corrected the Pardiso SPD interface to pass one matrix triangle and release
+  its one-shot factor workspace.
+- Removed the unsupported PETSc ILU configuration and misleading legacy alias.
 
-### Development
+### Tests, packaging, and documentation
 
-- Added deterministic staged and evolution benchmarks.
-- Added safe pytest markers and subprocess-isolated native-backend tests.
-- Removed stale `fluxflow` package metadata and legacy numerical kernels.
+- Added analytical and discrete conservation tests, compact/full-grid
+  agreement, matrix symmetry, periodic connectivity, multiple-channel,
+  validation, solver-diagnostic, and native-backend coverage.
+- Isolated optional native-backend tests and benchmarks in subprocesses so a
+  broken MPI/MKL runtime cannot abort the main test process.
+- Added Python 3.10–3.12 CI, modern SPDX/package metadata, backend-specific
+  optional extras, and source/wheel release checks.
+- Rewrote the README around the numerical model, verified capabilities,
+  solver tradeoffs, limitations, and reproducible v0.1.0 results.
+- Added PyPI-compatible absolute image URLs, the ReynoldsFlow logo, and
+  versioned release assets.
+- Removed stale `fluxflow` metadata and verified-dead numerical kernels.

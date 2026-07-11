@@ -1,188 +1,250 @@
-![Reynolds Fluid Solver](./docs/img/header.jpg)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/extras/logo.png" alt="ReynoldsFlow logo" width="560">
+</p>
 
-# Finite-Difference Reynolds Fluid Solver
+# ReynoldsFlow
 
-## Description
+<p align="center">
+  <a href="https://pypi.org/project/reynoldsflow/"><img src="https://img.shields.io/pypi/v/reynoldsflow.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/reynoldsflow/"><img src="https://img.shields.io/pypi/pyversions/reynoldsflow.svg" alt="Supported Python versions"></a>
+  <a href="https://github.com/vyastreb/reynoldsflow/actions/workflows/tests.yml"><img src="https://github.com/vyastreb/reynoldsflow/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg" alt="BSD-3-Clause license"></a>
+</p>
 
-An efficient Python code to solve the diffusion equation on Cartesian and polar grids:
+ReynoldsFlow is a finite-volume Python solver for steady incompressible flow in
+thin gaps with contact and complex percolating geometry. It solves Cartesian
+and polar forms of the Reynolds equation, retains all boundary-spanning fluid
+components, assembles only active degrees of freedom, and reconstructs
+conservative face fluxes from the same conductances used by the linear system.
 
-+ Reynolds equation:  
-  ```math
-  \nabla\cdot\left(g^3\nabla p\right)=0
-  ```
-+ Inlet/outlet pressure:  
-  ```math
-  p(x=0)=0,\quad p(x=1)=1
-  ```
-+ Periodic boundary conditions:  
-  ```math
-  p(y=0)=p(y=1),\quad \frac{\partial p}{\partial y}(x,y=0)=\frac{\partial p}{\partial y}(x,y=1)
-  ```
+The package is intended for rough-contact leakage calculations and related
+elliptic transport problems. Version 0.1.0 emphasizes numerical conservation,
+explicit convergence diagnostics, deterministic benchmarks, and safe optional
+solver selection.
 
+## Mathematical model
 
-<!-- ![equation to be solved](./docs/img/eq.png) -->
+For an isoviscous incompressible fluid with local gap `g` and pressure `p`, the
+dimensionless Cartesian problem is
 
-## What can it do?
+```text
+div(g³ grad(p)) = 0.
+```
 
-+ It takes as input a gap field $g$.
-+ It analyzes its connectivity and removes isolated islands and checks for percolation (whether a flow problem can be solved).
-+ It dilates non-zero gap field to properly handle impenetrability of channels, it allows not to erode the domain for flux calculation.
-+ It applies reservoir pressures $p(x=0)=0$ and $p(x=1)=1$ and uses periodic boundary conditions on the lateral sides $y=\{0,1\}$.
-+ It constructs a sparse matrix with conductivity proportional to $g^3$.
-+ Different solvers (direct and iterative with appropriate preconditioners) are selected and tuned to solve efficiently the resulting linear system of equations.
-+ Total flux is properly computed.
+The Cartesian discretization is cell-centered on the unit square. Axis 0 is
+the transport direction, axis 1 is periodic, and reservoir pressures are
+applied at the west and east boundary faces. Internal face conductivity is the
+harmonic mean of adjacent `g³` values. Cells with `g = 0` are impermeable;
+negative or non-finite gaps are invalid input.
 
-## Usage
+The polar solver discretizes the corresponding conservative annular operator
+on `(r, theta)`, with configurable radial pressures and periodic or symmetry
+angular boundary conditions.
 
-1. Install the package
+## Main features
+
+- Conservative Cartesian and polar finite-volume discretizations.
+- Periodic connectivity analysis retaining every independent spanning channel.
+- Compact sparse systems with one unknown per active percolating cell.
+- Exact-size two-pass CSR assembly accelerated with Numba.
+- Conservative face flux, total-flow integration, and conservation diagnostics.
+- Direct and AMG-preconditioned iterative solvers with checked true residuals.
+- Explicit errors for invalid input, unavailable backends, unknown solvers,
+  breakdown, and non-convergence.
+- Deterministic correctness and performance benchmarks.
+
+## Installation
+
+The portable installation includes SciPy and PyAMG:
+
 ```bash
 pip install reynoldsflow
 ```
-The `auto`/default solver is `scipy.amg-rs` (SciPy CG + Ruge-Stüben AMG via `pyamg`), included in the base install.
-For optional high-performance solvers (PARDISO, PETSc, CHOLMOD):
+
+Optional native backends can be installed separately:
+
 ```bash
-pip install reynoldsflow[solvers]
+pip install "reynoldsflow[pardiso]"   # pypardiso / oneMKL
+pip install "reynoldsflow[cholesky]" # scikit-sparse / CHOLMOD
+pip install "reynoldsflow[petsc]"    # petsc4py binding
+pip install "reynoldsflow[solvers]"  # request every optional Python binding
 ```
-Native optional solvers are selected explicitly (for example,
-`solver="petsc-cg.hypre"`). They are not probed by `auto`, because an unusable
-local MPI/MKL stack can terminate before Python can perform a safe fallback.
 
-2. Run a minimal example (flow around a circular inclusion)
+PETSc, MUMPS, Hypre, SuiteSparse, and oneMKL are native libraries. The PETSc
+installation itself must have been built with the requested Hypre or MUMPS
+support. Conda or a system/HPC package manager is often more reliable than
+building these stacks through pip. Optional native backends are selected
+explicitly; `solver="auto"` does not probe them because a broken MPI or MKL
+installation may terminate below Python before a fallback is possible.
+
+For plotting examples and development tools:
+
+```bash
+pip install "reynoldsflow[plot]"
+pip install "reynoldsflow[dev]"
+```
+
+## Quick start
+
+This example computes flow around a circular impermeable inclusion:
+
 ```python
-import numpy as np
 import matplotlib.pyplot as plt
-from reynoldsflow import transport as FS
+import numpy as np
 
-n = 100
-X, Y = np.meshgrid(np.linspace(0, 1, n), np.linspace(0, 1, n))
-gaps = (np.sqrt((X - 0.5)**2 + (Y - 0.5)**2) > 0.2).astype(float)
+from reynoldsflow import transport
 
-_, _, flux = FS.solve_fluid_problem(gaps, solver="scipy.amg-rs")
-if flux is not None:
-    plt.imshow(np.sqrt(flux[:, :, 0]**2 + flux[:, :, 1]**2),
-               origin='lower', cmap='jet')
+n = 256
+coordinate = (np.arange(n, dtype=float) + 0.5) / n
+x, y = np.meshgrid(coordinate, coordinate, indexing="ij")
+gaps = (np.hypot(x - 0.5, y - 0.5) > 0.2).astype(float)
+
+filtered_gaps, pressure, flux = transport.solve_fluid_problem(
+    gaps,
+    solver="auto",
+    p_west=0.0,
+    p_east=1.0,
+)
+
+if pressure is not None:
+    total_flux, conservation_error = transport.compute_total_flux(
+        filtered_gaps, flux, n
+    )
+    print(f"Q = {total_flux:.8g}")
+    print(f"relative conservation error = {conservation_error:.3e}")
+    plt.imshow(pressure.T, origin="lower", extent=(0, 1, 0, 1))
+    plt.colorbar(label="pressure")
     plt.show()
 ```
 
-Cartesian reservoir values default to `p_west=0` and `p_east=1` and can be
-overridden with keyword arguments to `solve_fluid_problem`.
+`solve_fluid_problem` returns `(filtered_gaps, pressure, flux)`. A normal
+non-percolating field returns `(None, None, None)`; invalid data and solver
+failures raise explicit exceptions. The default iterative tolerance is
+`rtol=1e-12`.
 
-3. Run the test suite
+For annular domains, use
+`reynoldsflow.transport_polar.solve_fluid_problem_polar`.
+
+## Linear solvers
+
+No backend is universally optimal. Sparse-direct methods are attractive as
+moderate-size references but exhibit fill-driven time and memory growth.
+Multigrid-preconditioned CG methods have higher setup costs and generally offer
+the better route to large systems.
+
+| Solver string | Method and preconditioner | Dependency | Advantages | Limitations / best use |
+|---|---|---|---|---|
+| `auto` | CG + Ruge–Stuben AMG | SciPy, PyAMG | Portable and safe default; no native optional stack | Same implementation as `scipy.amg-rs`; not always the fastest |
+| `scipy.amg-rs` | CG + Ruge–Stuben AMG | SciPy, PyAMG | Low memory; portable; explicit iterations and residual | Can require many iterations for strongly varying rough gaps |
+| `scipy.amg-smooth_aggregation` | CG + smoothed-aggregation AMG | SciPy, PyAMG | Portable alternative; competitive on the largest release case | More hierarchy memory; performance is problem-dependent |
+| `scipy-spsolve` | Sparse LU (SuperLU) | SciPy | Robust direct reference available in the base install | Superlinear fill and memory; intended for small/moderate diagnostics |
+| `cholesky` | Sparse Cholesky (CHOLMOD) | scikit-sparse, SuiteSparse | Very fast direct reference for the SPD operator | Native install; fill growth; performance depends strongly on BLAS |
+| `pardiso` | Sparse Cholesky (oneMKL Pardiso) | pypardiso, oneMKL | Accurate direct solve; tunable shared-memory parallelism | Native runtime; thread-sensitive; factor memory grows rapidly |
+| `petsc-cg.hypre` | CG + Hypre BoomerAMG | PETSc, Hypre | Few iterations; strongest large-scale option in current tests | PETSc/MPI installation and cold initialization cost |
+| `petsc-cg.gamg` | CG + PETSc GAMG | PETSc | PETSc-native algebraic multigrid | Iteration count and setup are more problem-dependent than Hypre |
+| `petsc-mumps` | Multifrontal direct solve | PETSc, MUMPS | Accurate direct reference inside PETSc | High factor memory; sensitive to MPI and BLAS configuration |
+
+Explicit native backends never silently fall back to another algorithm.
+
+## Reproducible v0.1.0 performance
+
+The following figure replaces the legacy performance plots as the release
+baseline. It uses the deterministic `rough-contact` case at `256²`, `512²`,
+`1024²`, `2048²`, and `4096²`; compact active-DOF systems; `rtol=1e-12`; and
+one native thread. Each solver ran in an isolated process. Runtime is the
+median of two steady end-to-end runs after one cold run. Peak RSS includes
+imports, native runtime state, JIT state, the gap field, matrix, solver data,
+and outputs.
+
+![Rough-contact solver runtime and memory scaling](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/rough_contact_solver_scaling_v0.1.0.png)
+
+The largest case contained 10,722,930 active DOFs and 53,531,200 matrix
+nonzeros:
+
+| Solver | Steady end-to-end time (s) | Peak RSS (GiB) | Iterations |
+|---|---:|---:|---:|
+| `petsc-cg.hypre` | 24.13 | 7.42 | 16 |
+| `cholesky` | 30.28 | 7.53 | direct |
+| `pardiso` | 31.71 | 9.64 | direct |
+| `scipy.amg-smooth_aggregation` | 63.01 | 7.02 | 38 |
+| `petsc-mumps` | 71.32 | 12.13 | direct |
+| `petsc-cg.gamg` | 74.46 | 6.27 | 109 |
+| `scipy-spsolve` | 153.50 | 23.10 | direct |
+| `scipy.amg-rs` | 224.59 | 5.95 | 50 |
+
+These values describe one matrix family and one binary environment; they are
+not universal backend rankings.
+
+### Benchmark host and numerical stack
+
+- Machine: 13th Gen Intel Core i7-13700H, 14 physical cores / 20 logical CPUs,
+  32 GiB RAM, Linux 6.8 x86-64.
+- Python 3.12.13; NumPy 2.4.2; SciPy 1.17.1; Numba 0.64.0;
+  scikit-image 0.26.0; PyAMG 5.3.0.
+- BLAS/LAPACK: conda-forge Netlib 3.11.0 for SciPy, CHOLMOD, PETSc, and MUMPS.
+- Pardiso: pypardiso 0.4.7 with Intel oneMKL 2025.3.
+- CHOLMOD: scikit-sparse 0.4.16 with SuiteSparse 7.10.1.
+- PETSc stack: petsc4py 3.24.4, PETSc 3.24.5, OpenMPI 5.0.10,
+  Hypre 3.1.0, and MUMPS 5.8.2; one MPI rank.
+- `OMP_NUM_THREADS=MKL_NUM_THREADS=OPENBLAS_NUM_THREADS=1`.
+
+Commands and full stage definitions are documented in
+[`benchmarks/README.md`](https://github.com/vyastreb/reynoldsflow/blob/master/benchmarks/README.md).
+The compact-system and tolerance validation is summarized in
+[`docs/performance-0.1.0.md`](https://github.com/vyastreb/reynoldsflow/blob/master/docs/performance-0.1.0.md).
+
+## Numerical validation
+
+The test suite covers analytical Cartesian and polar solutions, matrix
+symmetry, conservative section fluxes, periodic connectivity, multiple
+spanning channels, compact/full-grid agreement, prepared-topology safeguards,
+solver diagnostics, and subprocess-isolated native backends.
+
 ```bash
 python -m pytest -q
+python -m pytest -q --run-backend tests/integration/test_optional_backends.py
 ```
 
-Large and optional-backend workloads require explicit flags; see `AGENTS.md`
-or `docs/plans/reynoldsflow-implementation-plan.md`.
+Performance is never accepted without checking the true algebraic residual,
+finite pressure, total flow, and boundary-flux conservation.
 
-4. Or run these tests manually:
-+ Solves the flux evolution problem: `/tests/test_evolution.py`
-+ Solves flux problem on a Cartesian grid: `/tests/test_solve.py`
-+ Solves flux problem on a polar grid: `/tests/polar_flow.py`
-+ Tests all solvers: `/tests/test_solvers.py`.
+## Scope and limitations
 
-### Repeated fixed-topology solves
+- Steady, incompressible, isoviscous lubrication flow.
+- Prescribed immobile gap field; no fluid–structure coupling.
+- No cavitation, compressibility, inertia, or transient storage model.
+- Cartesian public solves currently require square arrays.
+- Native backend availability and performance depend on the local binary stack.
 
-When gap values change but the positive/blocked mask remains exactly the same,
-prepare connectivity and CSR topology once:
+## Illustrations
 
-```python
-prepared = FS.prepare_fluid_problem(gaps)
-for updated_gaps in gap_sequence:
-    filtered, pressure, flux = prepared.solve(
-        updated_gaps, solver="scipy.amg-rs"
-    )
-```
+The following earlier large rough-contact simulations are retained as
+qualitative examples; they are not part of the v0.1.0 benchmark baseline.
 
-The polar equivalent is `transport_polar.prepare_fluid_problem_polar(...)`.
-Prepared objects reject topology changes. `reuse_preconditioner=True` can reuse
-an AMG hierarchy for moderate coefficient changes, but is deliberately opt-in:
-it can increase iteration counts, and convergence/residual checks still apply.
+![Rough-contact flow on an 8000 by 8000 grid](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/illustration.jpg)
 
-## Available Solvers and Preconditioners
+![Rough-contact flow on a 20000 by 20000 grid](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/illustration_2.jpg)
 
-The fluid flow solver supports several linear system solvers and preconditioners for efficient and robust solution of large sparse systems:
+## Project information
 
-| Solver String | Solver Type | Preconditioner | Backend | Description |
-|---------------|-------------|----------------|---------|-------------|
-| `pardiso` | Direct | - | Intel MKL | 🥇PARDISO direct solver. The fastest for bigger problems, but consumes a lot of memory. |
-| `petsc-cg.hypre` | Iterative (CG) | HYPRE | PETSc | 🥇 CG with HYPRE BoomerAMG. The fastest for moderate problems. |
-| `scipy.amg-rs` | Iterative (CG) | AMG (Ruge-Stuben) | SciPy/PyAMG | CG with Ruge-Stuben AMG. Only two times slower than the fastest.  |
-| `scipy.amg-smooth_aggregation` | Iterative (CG) | AMG (Smoothed Aggregation) | SciPy/PyAMG | CG with Smoothed Aggregation AMG. Memory efficient, but relatively slow.|
-| `cholesky` | Direct | - | scikit-sparse | CHOLMOD Cholesky decomposition. Slightly lower memory consumption for huge problems, but it is slow. |
-| `petsc-cg.gamg` | Iterative (CG) | GAMG | PETSc | CG with Geometric Algebraic Multigrid. Not very reliable in performance, 2-3 times slower than the fastest solver. |
-| `petsc-mumps` | Direct | - | PETSc/MUMPS | MUMPS direct solver via PETSc. For moderate problems, five times slower than the fastest solver. |
-| `scipy-spsolve` | Direct | - | SciPy | Portable sparse direct reference solver for small and diagnostic problems. |
+### Citation
 
-Historical elapsed times originally described as a $2000\times2000$ problem
-(relative tolerance `1e-8`) are retained below. Git history indicates that this
-table was probably generated by the `2048 x 2048` self-affine rough-contact
-solver sweep, not the circular example. Its hardware, BLAS, backend versions,
-and thread policy were not recorded, so it is not a regression baseline.
+If ReynoldsFlow contributes to scientific work, please cite the software using
+the metadata in
+[`CITATION.cff`](https://github.com/vyastreb/reynoldsflow/blob/master/CITATION.cff).
 
-| **Solver**                    | **CPU time (s)** |
-|-------------------------------|-----------------:|
-| petsc-cg.hypre                | 4.46 |
-| pardiso                       | 8.53 |
-| scipy.amg-rs                  | 8.96 |
-| petsc-cg.gamg                 | 11.96 |
-| scipy.amg-smooth_aggregation  | 15.48 |
-| cholesky                      | 20.61 |
-| petsc-mumps                   | 26.14 |
+### Credits
 
-Current rules of thumb:
+- Author: Vladislav A. Yastrebov, CNRS, Mines Paris – PSL, Centre des Matériaux.
+- Development period: September 2025 – July 2026.
+- License: BSD 3-Clause; see
+  [`LICENSE`](https://github.com/vyastreb/reynoldsflow/blob/master/LICENSE).
+- Repository: [github.com/vyastreb/reynoldsflow](https://github.com/vyastreb/reynoldsflow).
+- Changelog:
+  [`CHANGELOG.md`](https://github.com/vyastreb/reynoldsflow/blob/master/CHANGELOG.md).
 
-- Prefer `petsc-cg.hypre` for production-size rough-contact problems.
-- Use `scipy.amg-rs` as the portable base-dependency solver.
-- Use direct solvers as moderate-size references; their performance depends
-  strongly on elimination fill, BLAS/LAPACK, backend build, hardware, and
-  native thread policy.
-- Pardiso can be competitive when its MKL thread count is tuned for the host.
-
-See [the direct-solver performance diagnosis](docs/direct-solver-performance-diagnosis.md)
-for matched-workload and thread-control experiments.
-
-The most reliable solvers for big problems are `petsc-cg.hypre` and `pardiso`. Here are the test data obtained on rough "contact" problems on Intel(R) Xeon(R) Platinum 8488C. Only solver's time is shown (relative tolerance for PETSc-CG.Hypre was set to 1e-8).
-
-<table>
-  <thead>
-    <tr><th rowspan="2">N</th><th colspan="2">CPU time (s)</th></tr>
-    <tr><th>PETSc-CG.Hypre</th><th>Intel MKL Pardiso</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>20 000</td><td>1059.22</td><td>∅</td></tr>
-    <tr><td>10 000</td><td>278.18</td><td>112.38</td></tr>
-    <tr><td>5 000</td><td>70.62</td><td>28.42</td></tr>
-    <tr><td>2 500</td><td>17.72</td><td>6.34</td></tr>
-    <tr><td>1 250</td><td>4.47</td><td>1.93</td></tr>
-  </tbody>
-</table>
-
-∅ $-$ `pardiso` could not run as it required more than 256 GB or memory.
-
-**CPU/RAM Performance**
-
-Performance of the code on a truncated rough surface is shown below. The peak memory consumption and the CPU time required to perform connectivity analysis, constructing the matrix and solving the linear system are provided. The real number of DOFs is reported which corresponds to approximately 84% of the square grid $N\times N$ for $N\in\{500, 1\,000, 2\,000, 4\,000, 6\,000, 8\,000, 16\,000\}$ (relative tolerance for iterative solvers was set to 1e-8).
-
-![CPU and RAM performance of the solver](./docs/img/CPU_RAM_real_dof_performance.png)
-
-The correctness and compact-CSR measurements for version 0.1.0 are documented
-in [`docs/performance-0.1.0.md`](./docs/performance-0.1.0.md).
-
-
-## Illustration
-
-An example of a fluid flow simulation, solved on the grid $N\times N = 8\,000 \times 8\,000$ which features a truncated self-affine rough surface with a rich spectrum. Solution time on my laptop with `petsc` is only 97 seconds and the peak memory consumption is 25.8 GB.
-
-![Solution for 64 million grid points](./docs/img/illustration.jpg)
-
-Another example for a grid $N\times N = 20\,000 \times 20\,000$. Simulation time (sequential) $\approx 17$ minutes on Intel(R) Xeon(R) Platinum 8488C with the peak memory below 230 GB with `petsc-cg.gamg` solver.
-
-![Solution for 400 million grid points](./docs/img/illustration_2.jpg)
-
-## Info
-
-+ Author: Vladislav A. Yastrebov (CNRS, Mines Paris - PSL)
-+ AI usage: Cursor & Copilot (different models), ChatGPT 4o, 5, Claude Sonnet 3.7, 4, 4.5
-+ License: BSD 3-clause
-+ Date: Sept-Nov 2025
+AI-assisted development is acknowledged for Cursor and GitHub Copilot;
+ChatGPT 4o and 5; Claude 3.7, 4, and 4.5; and OpenAI Codex (GPT-5). Codex
+assisted with the numerical audit, regression tests, benchmark methodology,
+documentation, and v0.1.0 release engineering. Scientific and numerical
+decisions and all generated code were reviewed by the author.

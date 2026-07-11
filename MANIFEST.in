@@ -1,9 +1,20 @@
 include CHANGELOG.md
+include CITATION.cff
 include requirements.txt
 include requirements-solvers.txt
-recursive-include benchmarks *.py *.md
-include docs/test_solvers.md
+recursive-include benchmarks *.py
+include benchmarks/README.md
+include benchmarks/results/rough-contact-scaling-v0.1.0.csv
 include docs/performance-0.1.0.md
 include docs/img/README.md
-include docs/plans/reynoldsflow-implementation-plan.md
+include docs/img/rough_contact_solver_scaling_v0.1.0.png
+include extras/logo.png
+include extras/logo.svg
 recursive-include tests *.py
+
+# Keep historical investigations in the repository, but out of the release archive.
+exclude benchmarks/results/cartesian-circle-2000-fluidpaper-2026-07-11.md
+exclude benchmarks/results/cartesian-circle-512-fluidpaper-2026-07-11.md
+exclude docs/direct-solver-performance-diagnosis.md
+exclude docs/test_solvers.md
+prune docs/plans

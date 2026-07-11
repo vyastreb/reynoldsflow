@@ -1,26 +1,32 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "reynoldsflow"
 version = "0.1.0"
 requires-python = ">=3.10"
-description = "Efficient finite-difference solver for the Reynolds equation in thin fluid films"
-readme = "README.md"
-license = { text = "BSD-3-Clause" }
+description = "Conservative finite-volume solvers for Reynolds flow in rough-contact and annular gaps"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
+  { name = "Vladislav A. Yastrebov", email = "vladislav.yastrebov@minesparis.psl.eu" }
+]
+maintainers = [
   { name = "Vladislav A. Yastrebov", email = "vladislav.yastrebov@minesparis.psl.eu" }
 ]
 keywords = [
   "Reynolds equation", "thin film", "fluid mechanics", "lubrication",
-  "finite difference", "percolation", "sparse solver", "scientific computing"
+  "finite volume", "rough contact", "percolation", "sparse solver",
+  "scientific computing"
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -34,25 +40,39 @@ dependencies = [
   "numba>=0.56.0",
   "scikit-image>=0.19.0",
   "pyamg>=4.0.0",
-  "matplotlib>=3.5.0",
-  "rfgen>=0.1.0",
 ]
 
 [project.optional-dependencies]
+pardiso = ["pypardiso>=0.4"]
+petsc = ["petsc4py>=3.19"]
+cholesky = ["scikit-sparse>=0.4"]
 solvers = [
-  "pypardiso",
-  "petsc4py",
-  "scikit-sparse",
+  "pypardiso>=0.4",
+  "petsc4py>=3.19",
+  "scikit-sparse>=0.4",
 ]
+plot = ["matplotlib>=3.5"]
 dev = [
   "pytest>=7.0.0",
+  "build>=1.2",
+  "twine>=5.0",
+  "matplotlib>=3.5",
+  "rfgen>=0.1",
 ]
-all = ["reynoldsflow[solvers,dev]"]
+all = [
+  "pypardiso>=0.4",
+  "petsc4py>=3.19",
+  "scikit-sparse>=0.4",
+  "matplotlib>=3.5",
+]
 
 [project.urls]
 Homepage = "https://github.com/vyastreb/reynoldsflow"
 Repository = "https://github.com/vyastreb/reynoldsflow"
 Issues = "https://github.com/vyastreb/reynoldsflow/issues"
+Changelog = "https://github.com/vyastreb/reynoldsflow/blob/master/CHANGELOG.md"
+Documentation = "https://github.com/vyastreb/reynoldsflow#readme"
+Citation = "https://github.com/vyastreb/reynoldsflow/blob/master/CITATION.cff"
 
 [tool.setuptools.packages.find]
 where = ["src"]

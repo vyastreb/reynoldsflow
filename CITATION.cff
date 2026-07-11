@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use ReynoldsFlow in scientific work, please cite this software."
+title: "ReynoldsFlow: conservative finite-volume Reynolds flow solvers"
+type: software
+authors:
+  - family-names: Yastrebov
+    given-names: Vladislav A.
+    affiliation: "CNRS, Mines Paris - PSL, Centre des Matériaux"
+repository-code: "https://github.com/vyastreb/reynoldsflow"
+url: "https://pypi.org/project/reynoldsflow/"
+version: 0.1.0
+date-released: 2026-07-11
+license: BSD-3-Clause
