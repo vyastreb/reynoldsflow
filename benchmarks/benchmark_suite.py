@@ -27,6 +27,14 @@ DEFAULT_SOLVERS = (
 )
 
 
+def _text_tail(value: str | bytes | None, limit: int = 2000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    return value[-limit:]
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--size", type=int, default=512)
@@ -94,7 +102,7 @@ def _run_solver(
             "status": "timeout",
             "elapsed_process_s": perf_counter() - start,
             "error": f"exceeded {args.timeout:g} seconds",
-            "stderr_tail": (exc.stderr or "")[-2000:],
+            "stderr_tail": _text_tail(exc.stderr),
         }
 
     result: dict[str, Any] = {
@@ -109,7 +117,7 @@ def _run_solver(
         result["status"] = "crashed" if completed.returncode < 0 else "failed"
         result["error"] = f"worker exited with code {completed.returncode}"
     if completed.stderr:
-        result["stderr_tail"] = completed.stderr[-2000:]
+        result["stderr_tail"] = _text_tail(completed.stderr)
     return result
 
 
@@ -156,16 +164,45 @@ def main() -> int:
     if args.threads < 1:
         raise ValueError("--threads must be at least 1.")
 
+    created_utc = datetime.now(timezone.utc).isoformat()
     with tempfile.TemporaryDirectory(prefix="reynoldsflow-bench-") as directory:
         temporary_directory = Path(directory)
-        results = [
-            _run_solver(solver, args, temporary_directory / f"result-{index}.json")
-            for index, solver in enumerate(args.solvers)
-        ]
+        results = []
+        for index, solver in enumerate(args.solvers):
+            print(
+                f"[{index + 1}/{len(args.solvers)}] benchmarking {solver}",
+                file=sys.stderr,
+                flush=True,
+            )
+            result = _run_solver(
+                solver, args, temporary_directory / f"result-{index}.json"
+            )
+            results.append(result)
+            print(
+                f"[{index + 1}/{len(args.solvers)}] {solver}: {result['status']}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if args.output is not None:
+                partial_report = _build_report(args, created_utc, results)
+                _write_report(args.output, partial_report)
 
-    report = {
+    report = _build_report(args, created_utc, results)
+    serialized = json.dumps(report, indent=2, sort_keys=True)
+    if args.output is not None:
+        _write_report(args.output, report)
+    print(serialized)
+    return 0 if all(result["status"] == "ok" for result in results) else 1
+
+
+def _build_report(
+    args: argparse.Namespace,
+    created_utc: str,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
         "schema_version": 1,
-        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created_utc": created_utc,
         "configuration": {
             "case": args.case,
             "size": args.size,
@@ -178,12 +215,13 @@ def main() -> int:
         "summary": [_summary_row(result) for result in results],
         "results": results,
     }
-    serialized = json.dumps(report, indent=2, sort_keys=True)
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(serialized + "\n", encoding="utf-8")
-    print(serialized)
-    return 0 if all(result["status"] == "ok" for result in results) else 1
+
+
+def _write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 if __name__ == "__main__":

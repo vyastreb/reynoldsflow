@@ -158,9 +158,14 @@ Treat these as issues to test before or while optimizing, not as behavior to pre
 In roughly the order they should be investigated:
 
 1. Quantify peak memory at production sizes; small-process RSS is dominated by imports/JIT and does not expose the full CSR/compact benefit.
-2. Reuse native backend matrix/factorization objects where supported and demonstrably beneficial; AMG hierarchy reuse is already opt-in because it can increase iterations.
-3. Explore matrix-free/geometric multigrid and distributed PETSc only against the compact CSR baseline.
-4. Remove or isolate dead legacy COO, gradient, dilation, and filtering helpers after compatibility/reference coverage is no longer needed.
+2. Optimize the one-shot assembly, preconditioner construction, solve, and
+   flux pipeline. The primary rough-contact workflow does not repeatedly solve
+   the same operator.
+3. Treat X-flow and Y-flow as distinct operators: their Dirichlet and periodic
+   boundary directions differ, so a factorization or preconditioner must not be
+   reused without rebuilding or explicit validation.
+4. Explore matrix-free/geometric multigrid and distributed PETSc only against the compact CSR baseline.
+5. Remove or isolate dead legacy COO, gradient, dilation, and filtering helpers after compatibility/reference coverage is no longer needed.
 
 Do not start with micro-optimizing Numba arithmetic: connectivity, full-grid DOF count, triplet over-allocation, format copies, and solver/preconditioner choice offer much larger gains.
 

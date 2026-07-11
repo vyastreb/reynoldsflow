@@ -283,6 +283,12 @@ Status: completed
 
 Status: completed (topology reuse; AMG hierarchy reuse is opt-in)
 
+This capability is not a primary optimization target for the rough-contact
+workflow. A topology is normally solved once in each transport direction, and
+changing direction changes the Dirichlet/periodic boundary operator. Prepared
+objects remain available for other fixed-operator workflows, but performance
+decisions should be based on one-shot solves.
+
 ### Tasks
 
 - Introduce prepared geometry/topology objects for evolution sequences.
@@ -370,3 +376,5 @@ solver registry ------------ direct CSR assembly
 - 2026-07-10: Release-candidate safe suite: 61 passed and nine explicit slow/backend skips. Source and wheel distributions build successfully; the wheel was smoke-tested from an isolated virtual environment.
 - 2026-07-11: Corrected the MKL Pardiso SPD interface to pass one matrix triangle; the former full-symmetric input could segfault on the `512 x 512` case.
 - 2026-07-11: Added a subprocess-isolated all-backend performance suite with controlled thread counts and separate cold-start and steady-state reporting. All nine canonical backends completed the `512 x 512` circle case in the `fluidpaper` environment.
+- 2026-07-11: On the exact historical `2000 x 2000` circle case, warmed PETSc/Hypre completed end-to-end in 4.24 s (7 iterations), closely reproducing the old 4.46 s result. GAMG completed in 7.95 s, PyAMG methods in 9.16–12.50 s, and direct solvers in 11.80–109.25 s. Canonical GMRES/ILU exceeded the 600 s two-run worker budget.
+- 2026-07-11: Reclassified prepared/factorization reuse as secondary: the normal rough-contact workflow solves once per direction, and changing between X and Y changes the Dirichlet/periodic operator.

@@ -3,6 +3,7 @@
 import pytest
 
 from benchmarks.benchmark_solver import _summarize_runs
+from benchmarks.benchmark_suite import _text_tail
 
 
 pytestmark = pytest.mark.unit
@@ -35,3 +36,8 @@ def test_run_summary_treats_every_recorded_run_as_warm_after_warmup():
     assert "cold_total_s" not in summary
     assert summary["steady_runs"] == 2
     assert summary["steady_total_median_s"] == 4.0
+
+
+def test_timeout_output_bytes_are_json_safe_text():
+    assert _text_tail(b"native stderr", limit=6) == "stderr"
+    assert _text_tail(None) == ""
