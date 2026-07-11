@@ -8,8 +8,11 @@ initialization, and Numba compilation; the steady value is the second complete
 run.
 
 The historical values come from the original README and were produced on a
-different, insufficiently recorded software/hardware environment. They are
-included for orientation, not treated as a strict regression threshold.
+different, insufficiently recorded software/hardware environment. A later git
+audit found strong evidence that they came from the `2048 x 2048` self-affine
+rough-contact sweep, not this centered-circle case: the timing commit reset
+that sweep from 2048 to 128 immediately after adding the table. The historical
+column is therefore provenance only, not a like-for-like regression threshold.
 
 | Solver | Historical total (s) | Current cold total (s) | Current steady total (s) | Steady linear solve (s) | Iterations | Peak RSS (GiB) |
 |---|---:|---:|---:|---:|---:|---:|
@@ -21,21 +24,14 @@ included for orientation, not treated as a strict regression threshold.
 | `cholesky` | 20.61 | 27.747 | 26.234 | 25.863 | direct | 2.57 |
 | `petsc-mumps` | 26.14 | 44.180 | 39.570 | 39.237 | direct | 4.78 |
 | `scipy-spsolve` | — | 111.521 | 109.248 | 108.884 | direct | 8.94 |
-| `petsc-gmres.ilu` | 134.98\* | — | **two-run worker exceeded 600 s** | — | — | — |
 
-\* The historical row was labeled `petsc-cg.ilu`. The current canonical solver
-is GMRES+ILU because ILU does not preserve the symmetry contract required by
-CG, so this row is not an algorithm-for-algorithm comparison.
-
-All eight completed solvers passed their algebraic residual checks and agreed
-on total flux near `0.776450225`. Hypre most closely reproduces the historical
-best result: 4.241 s steady today versus 4.46 s historically. Direct sparse
-factorizations show superlinear time and memory growth. The GMRES/ILU timeout
-confirms that it is not a viable production method for this problem size.
+All completed solvers passed their algebraic residual checks and agreed on
+total flux near `0.776450225`. Direct sparse factorizations show superlinear
+time and memory growth. See `docs/direct-solver-performance-diagnosis.md` for
+the matched historical-workload and threading experiments.
 
 Raw reports:
 
-- `cartesian-circle-2000-fluidpaper-2026-07-11.json`: results through GAMG;
-  GMRES/ILU then timed out before the original suite could append its status.
+- `cartesian-circle-2000-fluidpaper-2026-07-11.json`: results through GAMG.
 - `cartesian-circle-2000-petsc-mumps-fluidpaper-2026-07-11.json`: separately
   resumed MUMPS result with identical benchmark settings.

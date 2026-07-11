@@ -8,6 +8,8 @@
   interface. Passing the complete symmetric matrix could segfault on larger
   systems.
 - Release each Pardiso factorization workspace after a one-shot solve.
+- Removed the unsupported PETSc ILU configuration and its misleading legacy
+  alias from the solver registry and benchmark suite.
 
 ### Benchmarks and tests
 
@@ -17,6 +19,8 @@
   warmup runs.
 - Added regressions for the Pardiso SPD storage contract and benchmark summary
   semantics.
+- Added CPU model, BLAS, and optional direct-backend versions to benchmark
+  environment metadata.
 
 ## 0.1.0 — 2026-07-10
 

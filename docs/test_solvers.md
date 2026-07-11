@@ -34,7 +34,6 @@ The test covers the following solver configurations:
 #### Iterative Solvers (PETSc)
 - **petsc-cg.gamg**: PETSc CG with GAMG preconditioner
 - **petsc-cg.hypre**: PETSc CG with Hypre preconditioner
-- **petsc-gmres.ilu**: PETSc GMRES with ILU preconditioner (`petsc-cg.ilu` is a legacy alias)
 
 ## Output
 

@@ -14,6 +14,7 @@ CARTESIAN_CASES = (
     "parallel-channels",
     "nonpercolating",
     "rough-contact",
+    "historical-rough-contact",
 )
 
 POLAR_CASES = (
@@ -72,6 +73,28 @@ def build_cartesian_case(
         width = max(1, n // 16)
         gaps[: n // 2, n // 2 : n // 2 + width] = 1.0
         return gaps
+
+    if name == "historical-rough-contact":
+        # Reproduce the field used by the October 2025 all-solver sweep.  That
+        # script used NumPy's legacy global RNG and a shifted Fourier filter.
+        random_state = np.random.RandomState(seed)
+        frequencies = np.fft.fftfreq(n)
+        wave_number = np.sqrt(
+            frequencies[:, None] ** 2 + frequencies[None, :] ** 2
+        )
+        wave_number = np.fft.fftshift(wave_number)
+        k_low = 1.0 / n
+        k_high = 12.0 / n
+        spectral_filter = np.zeros_like(wave_number)
+        band = (wave_number >= k_low) & (wave_number <= k_high)
+        spectral_filter[band] = (wave_number[band] / k_low) ** -1.5
+        spectral_filter[wave_number < k_low] = 1.0
+        white_noise = np.fft.fft2(random_state.normal(size=(n, n)))
+        field = np.real(
+            np.fft.ifft2(np.fft.ifftshift(white_noise * spectral_filter))
+        )
+        field /= np.std(field)
+        return np.clip(field + 0.3, 0.0, None)
 
     rng = np.random.default_rng(seed)
     field = gaussian_filter(

@@ -16,8 +16,5 @@ compilation. The steady values are medians of the remaining two runs.
 | `pardiso` | 1.800 | 0.659 | 0.639 | direct |
 | `petsc-mumps` | 5.546 | 1.207 | 1.186 | direct |
 | `scipy-spsolve` | 2.718 | 1.707 | 1.684 | direct |
-| `petsc-gmres.ilu` | 19.081 | 16.056 | 16.036 | 781 |
 
-All solvers passed their algebraic residual checks. `petsc-gmres.ilu` had a
-larger flux-conservation error (approximately `6.3e-6`) than the other methods
-at the same requested tolerance and is not recommended for this workload.
+All listed solvers passed their algebraic residual checks.

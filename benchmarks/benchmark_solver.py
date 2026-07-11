@@ -63,12 +63,33 @@ def _peak_rss_bytes() -> int:
     return int(value if sys.platform == "darwin" else value * 1024)
 
 
+def _cpu_model() -> str:
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("model name"):
+                return line.split(":", maxsplit=1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor()
+
+
+def _numpy_blas() -> dict[str, Any]:
+    configuration = getattr(np.__config__, "CONFIG", {})
+    blas = configuration.get("Build Dependencies", {}).get("blas", {})
+    return {
+        key: blas.get(key)
+        for key in ("name", "version", "openblas configuration")
+    }
+
+
 def _environment() -> dict[str, Any]:
     return {
         "python": platform.python_version(),
         "platform": platform.platform(),
         "processor": platform.processor(),
+        "cpu_model": _cpu_model(),
         "cpu_count": os.cpu_count(),
+        "numpy_blas": _numpy_blas(),
         "thread_environment": {
             name: os.environ.get(name)
             for name in (
@@ -87,6 +108,9 @@ def _environment() -> dict[str, Any]:
                 "numba",
                 "scikit-image",
                 "pyamg",
+                "pypardiso",
+                "petsc4py",
+                "scikit-sparse",
             )
         },
     }

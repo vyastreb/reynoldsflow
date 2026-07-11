@@ -84,7 +84,7 @@ Base dependencies include NumPy, SciPy, Numba, scikit-image, and PyAMG. `pypardi
 - `scipy.amg-smooth_aggregation` (alias `scipy.amg-sa`): SciPy iterative solve with smoothed-aggregation AMG.
 - `pardiso`: MKL Pardiso through `pypardiso`.
 - `cholesky`: CHOLMOD through `scikit-sparse`.
-- `petsc-cg.hypre`, `petsc-cg.gamg`, `petsc-gmres.ilu`: PETSc iterative paths (`petsc-cg.ilu` is a legacy alias).
+- `petsc-cg.hypre`, `petsc-cg.gamg`: PETSc iterative paths.
 - `petsc-mumps`: PETSc/MUMPS direct solve.
 - `auto`/`none`: use portable `scipy.amg-rs`. Native PETSc/Pardiso stacks are explicit-only because a broken MPI/MKL installation can terminate below Python before fallback.
 
