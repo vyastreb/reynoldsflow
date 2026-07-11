@@ -1,0 +1,9 @@
+include CHANGELOG.md
+include requirements.txt
+include requirements-solvers.txt
+recursive-include benchmarks *.py *.md
+include docs/test_solvers.md
+include docs/performance-0.1.0.md
+include docs/img/README.md
+include docs/plans/reynoldsflow-implementation-plan.md
+recursive-include tests *.py

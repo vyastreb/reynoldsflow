@@ -1,0 +1,4 @@
+# Optional native solver backends. The base solver does not require these.
+pypardiso
+petsc4py
+scikit-sparse
