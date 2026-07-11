@@ -16,6 +16,8 @@ from scipy.sparse.linalg import spsolve
 from reynoldsflow.transport import create_diffusion_matrix, face_k
 from reynoldsflow.transport_polar import create_diffusion_matrix_polar
 
+pytestmark = pytest.mark.unit
+
 TOL_CART = 1e-5
 TOL_POLAR = 1e-5
 
@@ -155,15 +157,16 @@ def _discrete_cartesian_profile(g_line, p_west=0.0, p_east=1.0):
     g_line = np.asarray(g_line, dtype=float)
     n = g_line.size
 
-    resistance = 1.0 / (g_line[0] ** 3)
+    # Boundary reservoirs are half a cell from the first/last cell centers.
+    resistance = 0.5 / (g_line[0] ** 3)
     for k in range(1, n):
         resistance += 1.0 / face_k(g_line[k], g_line[k - 1])
-    resistance += 1.0 / (g_line[-1] ** 3)
+    resistance += 0.5 / (g_line[-1] ** 3)
 
     flux = (p_east - p_west) / resistance
 
     profile = np.empty(n, dtype=float)
-    profile[0] = p_west + flux / (g_line[0] ** 3)
+    profile[0] = p_west + 0.5 * flux / (g_line[0] ** 3)
     for i in range(1, n):
         profile[i] = profile[i - 1] + flux / face_k(g_line[i], g_line[i - 1])
 
@@ -179,7 +182,7 @@ def test_cartesian_constant_gap_matches_linear_profile():
     gaps = np.full((n, n), g0, dtype=float)
 
     pressure = _solve_cartesian_pressure(gaps)
-    x_nodes = (np.arange(n) + 1.0) / (n + 1.0)
+    x_nodes = (np.arange(n) + 0.5) / n
 
     numeric = pressure.mean(axis=1)
     g_line = np.full(n, g0, dtype=float)
@@ -200,7 +203,7 @@ def test_cartesian_linear_gap_matches_analytic_solution():
     g_in = 0.6
     g_out = 1.1
 
-    x_nodes = (np.arange(n) + 1.0) / (n + 1.0)
+    x_nodes = (np.arange(n) + 0.5) / n
     g_line = g_in + (g_out - g_in) * x_nodes
     gaps = np.tile(g_line[:, None], (1, n))
 
@@ -277,5 +280,3 @@ def test_polar_linear_gap_matches_analytic_solution():
     _record_result("polar-linear", err_abs, err_rel, TOL_POLAR, TOL_POLAR)
 
     assert_allclose(numeric, expected, atol=TOL_POLAR, rtol=TOL_POLAR)
-
-

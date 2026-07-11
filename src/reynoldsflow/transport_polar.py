@@ -9,21 +9,49 @@ License: BSD 3-Clause
 
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 import numpy as np
 from numba import jit, njit
-from scipy.sparse import coo_matrix, save_npz
-from skimage.measure import label
+from scipy.sparse import csr_matrix, save_npz
+
+from ._connectivity import find_spanning_mask
+from ._active_dofs import build_active_mapping, reconstruct_full_solution
+from ._linear_solvers import (
+    DEFAULT_RTOL,
+    build_amg_preconditioner,
+    normalize_solver_name,
+    solve_linear_system,
+)
+from ._exceptions import InvalidGapError
+from ._validation import validate_gap_array
+from ._sparse import indptr_from_counts
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
+_STREAM_HANDLER_MARKER = "_reynoldsflow_stream_handler"
 
 
 def setup_logging(level=logging.INFO):
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('/FS: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    """Configure one module stream handler, even when called repeatedly."""
+    handler = next(
+        (
+            existing
+            for existing in logger.handlers
+            if getattr(existing, _STREAM_HANDLER_MARKER, False)
+        ),
+        None,
+    )
+    if handler is None:
+        handler = logging.StreamHandler()
+        setattr(handler, _STREAM_HANDLER_MARKER, True)
+        formatter = logging.Formatter(
+            '/FS: %(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
     logger.setLevel(level)
 
 
@@ -51,139 +79,141 @@ def face_k(a: float, b: float) -> float:
 
 
 @njit
-def _build_matrix_elements_polar(
-    n_r: int,
-    n_theta: int,
-    gaps: np.ndarray,
-    r_inner: float,
-    dr: float,
-    dtheta: float,
-    p_inner: float,
-    p_outer: float,
-    theta_bc_code: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Numba-accelerated assembly of diffusion matrix in polar coordinates."""
-    N = n_r * n_theta
-    row_indices = np.empty(5 * N, dtype=np.int32)
-    col_indices = np.empty(5 * N, dtype=np.int32)
-    data = np.empty(5 * N, dtype=np.float64)
-    b = np.zeros(N, dtype=np.float64)
+def _count_full_matrix_entries_polar(
+    n_r, n_theta, gaps, theta_bc_code
+):
+    counts = np.empty(n_r * n_theta, dtype=np.int32)
+    for i in range(n_r):
+        for j in range(n_theta):
+            row = i * n_theta + j
+            if gaps[i, j] <= 0.0 or i == 0 or i == n_r - 1:
+                counts[row] = 1
+                continue
+            count = 1
+            if i + 1 < n_r - 1 and gaps[i + 1, j] > 0.0:
+                count += 1
+            if i - 1 > 0 and gaps[i - 1, j] > 0.0:
+                count += 1
+            if n_theta > 1:
+                if theta_bc_code == THETA_BC_PERIODIC:
+                    if gaps[i, (j + 1) % n_theta] > 0.0:
+                        count += 1
+                    if gaps[i, (j - 1) % n_theta] > 0.0:
+                        count += 1
+                else:
+                    if j + 1 < n_theta and gaps[i, j + 1] > 0.0:
+                        count += 1
+                    if j > 0 and gaps[i, j - 1] > 0.0:
+                        count += 1
+            counts[row] = count
+    return counts
 
+
+@njit
+def _fill_full_matrix_csr_polar(
+    n_r,
+    n_theta,
+    gaps,
+    r_inner,
+    dr,
+    dtheta,
+    p_inner,
+    p_outer,
+    theta_bc_code,
+    indptr,
+):
+    indices = np.empty(int(indptr[-1]), dtype=np.int32)
+    data = np.empty(int(indptr[-1]), dtype=np.float64)
+    b = np.zeros(n_r * n_theta, dtype=np.float64)
     dtheta_sq = dtheta * dtheta if n_theta > 1 else 1.0
 
-    nnz = 0
     for i in range(n_r):
         r_i = r_inner + i * dr
         for j in range(n_theta):
-            idx = i * n_theta + j
+            row = i * n_theta + j
+            cursor = int(indptr[row])
             if gaps[i, j] <= 0.0:
-                row_indices[nnz] = idx
-                col_indices[nnz] = idx
-                data[nnz] = 1.0
-                b[idx] = 0.0
-                nnz += 1
+                indices[cursor] = row
+                data[cursor] = 1.0
                 continue
-
             if i == 0:
-                row_indices[nnz] = idx
-                col_indices[nnz] = idx
-                data[nnz] = 1.0
-                b[idx] = p_inner
-                nnz += 1
+                indices[cursor] = row
+                data[cursor] = 1.0
+                b[row] = p_inner
                 continue
             if i == n_r - 1:
-                row_indices[nnz] = idx
-                col_indices[nnz] = idx
-                data[nnz] = 1.0
-                b[idx] = p_outer
-                nnz += 1
+                indices[cursor] = row
+                data[cursor] = 1.0
+                b[row] = p_outer
                 continue
 
             diag = 0.0
-
-            # Radial neighbors
-            r_ip_half = r_i + 0.5 * dr
-            r_im_half = r_i - 0.5 * dr
-
-            g_plus = face_k(gaps[i, j], gaps[i + 1, j])
-            if g_plus > 0.0:
-                coeff = g_plus * r_ip_half / (r_i * dr * dr)
+            coefficient = face_k(gaps[i, j], gaps[i + 1, j])
+            if coefficient > 0.0:
+                coefficient *= (
+                    r_inner + (i + 0.5) * dr
+                ) / (dr * dr)
+                diag += coefficient
                 if i + 1 == n_r - 1:
-                    diag += coeff
-                    b[idx] += coeff * p_outer
+                    b[row] += coefficient * p_outer
                 else:
-                    row_indices[nnz] = idx
-                    col_indices[nnz] = (i + 1) * n_theta + j
-                    data[nnz] = -coeff
-                    nnz += 1
-                    diag += coeff
+                    indices[cursor] = (i + 1) * n_theta + j
+                    data[cursor] = -coefficient
+                    cursor += 1
 
-            g_minus = face_k(gaps[i, j], gaps[i - 1, j])
-            if g_minus > 0.0:
-                coeff = g_minus * r_im_half / (r_i * dr * dr)
+            coefficient = face_k(gaps[i, j], gaps[i - 1, j])
+            if coefficient > 0.0:
+                coefficient *= (
+                    r_inner + (i - 0.5) * dr
+                ) / (dr * dr)
+                diag += coefficient
                 if i - 1 == 0:
-                    diag += coeff
-                    b[idx] += coeff * p_inner
+                    b[row] += coefficient * p_inner
                 else:
-                    row_indices[nnz] = idx
-                    col_indices[nnz] = (i - 1) * n_theta + j
-                    data[nnz] = -coeff
-                    nnz += 1
-                    diag += coeff
+                    indices[cursor] = (i - 1) * n_theta + j
+                    data[cursor] = -coefficient
+                    cursor += 1
 
-            # Angular neighbors
             if n_theta > 1 and dtheta > 0.0:
                 if theta_bc_code == THETA_BC_PERIODIC:
                     j_plus = (j + 1) % n_theta
-                    j_minus = (j - 1 + n_theta) % n_theta
-
-                    g_theta_plus = face_k(gaps[i, j], gaps[i, j_plus])
-                    if g_theta_plus > 0.0:
-                        coeff = g_theta_plus / (r_i * r_i * dtheta_sq)
-                        row_indices[nnz] = idx
-                        col_indices[nnz] = i * n_theta + j_plus
-                        data[nnz] = -coeff
-                        nnz += 1
-                        diag += coeff
-
-                    g_theta_minus = face_k(gaps[i, j], gaps[i, j_minus])
-                    if g_theta_minus > 0.0:
-                        coeff = g_theta_minus / (r_i * r_i * dtheta_sq)
-                        row_indices[nnz] = idx
-                        col_indices[nnz] = i * n_theta + j_minus
-                        data[nnz] = -coeff
-                        nnz += 1
-                        diag += coeff
+                    j_minus = (j - 1) % n_theta
+                    coefficient = face_k(gaps[i, j], gaps[i, j_plus])
+                    if coefficient > 0.0:
+                        coefficient /= r_i * dtheta_sq
+                        indices[cursor] = i * n_theta + j_plus
+                        data[cursor] = -coefficient
+                        cursor += 1
+                        diag += coefficient
+                    coefficient = face_k(gaps[i, j], gaps[i, j_minus])
+                    if coefficient > 0.0:
+                        coefficient /= r_i * dtheta_sq
+                        indices[cursor] = i * n_theta + j_minus
+                        data[cursor] = -coefficient
+                        cursor += 1
+                        diag += coefficient
                 else:
                     if j + 1 < n_theta:
-                        g_theta_plus = face_k(gaps[i, j], gaps[i, j + 1])
-                        if g_theta_plus > 0.0:
-                            coeff = g_theta_plus / (r_i * r_i * dtheta_sq)
-                            row_indices[nnz] = idx
-                            col_indices[nnz] = i * n_theta + (j + 1)
-                            data[nnz] = -coeff
-                            nnz += 1
-                            diag += coeff
-                    if j - 1 >= 0:
-                        g_theta_minus = face_k(gaps[i, j], gaps[i, j - 1])
-                        if g_theta_minus > 0.0:
-                            coeff = g_theta_minus / (r_i * r_i * dtheta_sq)
-                            row_indices[nnz] = idx
-                            col_indices[nnz] = i * n_theta + (j - 1)
-                            data[nnz] = -coeff
-                            nnz += 1
-                            diag += coeff
+                        coefficient = face_k(gaps[i, j], gaps[i, j + 1])
+                        if coefficient > 0.0:
+                            coefficient /= r_i * dtheta_sq
+                            indices[cursor] = i * n_theta + j + 1
+                            data[cursor] = -coefficient
+                            cursor += 1
+                            diag += coefficient
+                    if j > 0:
+                        coefficient = face_k(gaps[i, j], gaps[i, j - 1])
+                        if coefficient > 0.0:
+                            coefficient /= r_i * dtheta_sq
+                            indices[cursor] = i * n_theta + j - 1
+                            data[cursor] = -coefficient
+                            cursor += 1
+                            diag += coefficient
 
-            row_indices[nnz] = idx
-            col_indices[nnz] = idx
-            data[nnz] = diag
-            nnz += 1
+            indices[cursor] = row
+            data[cursor] = diag
 
-    row_indices = row_indices[:nnz]
-    col_indices = col_indices[:nnz]
-    data = data[:nnz]
-
-    return row_indices, col_indices, data, b
+    return indices, data, b
 
 
 def create_diffusion_matrix_polar(
@@ -194,24 +224,38 @@ def create_diffusion_matrix_polar(
     theta_bc_code: int,
     p_inner: float,
     p_outer: float,
-) -> Tuple[coo_matrix, np.ndarray, float, float]:
+) -> Tuple[csr_matrix, np.ndarray, float, float]:
     """Create sparse matrix for polar diffusion problem."""
+    gaps = validate_gap_array(
+        gaps, geometry="Polar", minimum_shape=(2, 1)
+    )
     n_r, n_theta = gaps.shape
 
     if n_r < 2:
         raise ValueError("Need at least two radial nodes.")
     if r_outer <= r_inner:
         raise ValueError("Outer radius must exceed inner radius.")
+    if r_inner <= 0.0:
+        raise ValueError("Inner radius must be positive.")
+    if theta_extent <= 0.0 or not np.isfinite(theta_extent):
+        raise ValueError("Angular extent must be finite and positive.")
 
     dr = (r_outer - r_inner) / (n_r - 1)
     if n_theta <= 1:
-        dtheta = 1.0
+        dtheta = theta_extent
     elif theta_bc_code == THETA_BC_PERIODIC:
         dtheta = theta_extent / n_theta
     else:
         dtheta = theta_extent / (n_theta - 1)
 
-    row, col, data, b = _build_matrix_elements_polar(
+    total_dofs = n_r * n_theta
+    if total_dofs > np.iinfo(np.int32).max:
+        raise OverflowError("Polar grid exceeds int32 matrix index capacity.")
+    counts = _count_full_matrix_entries_polar(
+        n_r, n_theta, gaps, theta_bc_code
+    )
+    indptr = indptr_from_counts(counts)
+    indices, data, b = _fill_full_matrix_csr_polar(
         n_r,
         n_theta,
         gaps,
@@ -221,84 +265,377 @@ def create_diffusion_matrix_polar(
         p_inner,
         p_outer,
         theta_bc_code,
+        indptr,
     )
-
-    N = n_r * n_theta
-    A = coo_matrix((data, (row, col)), shape=(N, N), dtype=np.float64)
+    A = csr_matrix(
+        (data, indices, indptr),
+        shape=(total_dofs, total_dofs),
+        dtype=np.float64,
+    )
+    A.sort_indices()
     return A, b, dr, dtheta
 
 
-@jit(nopython=True)
-def _calculate_gradients_polar(
-    n_r: int,
-    n_theta: int,
-    p: np.ndarray,
-    dr: float,
-    dtheta: float,
+@njit
+def _count_active_matrix_entries_polar(
+    n_r, n_theta, theta_bc_code, grid_to_dof, dof_to_grid
+):
+    active_count = dof_to_grid.size
+    counts = np.empty(active_count, dtype=np.int32)
+    for row in range(active_count):
+        grid_index = int(dof_to_grid[row])
+        i = grid_index // n_theta
+        j = grid_index - i * n_theta
+        if i == 0 or i == n_r - 1:
+            counts[row] = 1
+            continue
+        count = 1
+        if i + 1 < n_r - 1:
+            if grid_to_dof[(i + 1) * n_theta + j] >= 0:
+                count += 1
+        if i - 1 > 0:
+            if grid_to_dof[(i - 1) * n_theta + j] >= 0:
+                count += 1
+        if n_theta > 1:
+            if theta_bc_code == THETA_BC_PERIODIC:
+                if grid_to_dof[i * n_theta + (j + 1) % n_theta] >= 0:
+                    count += 1
+                if grid_to_dof[i * n_theta + (j - 1) % n_theta] >= 0:
+                    count += 1
+            else:
+                if j + 1 < n_theta:
+                    if grid_to_dof[i * n_theta + j + 1] >= 0:
+                        count += 1
+                if j > 0:
+                    if grid_to_dof[i * n_theta + j - 1] >= 0:
+                        count += 1
+        counts[row] = count
+    return counts
+
+
+@njit
+def _fill_active_matrix_csr_polar_into(
+    n_r,
+    n_theta,
+    gaps,
+    r_inner,
+    dr,
+    dtheta,
+    p_inner,
+    p_outer,
+    theta_bc_code,
+    grid_to_dof,
+    dof_to_grid,
+    indptr,
+    indices,
+    data,
+    b,
+):
+    active_count = dof_to_grid.size
+    dtheta_sq = dtheta * dtheta if n_theta > 1 else 1.0
+
+    for row in range(active_count):
+        grid_index = int(dof_to_grid[row])
+        i = grid_index // n_theta
+        j = grid_index - i * n_theta
+        cursor = int(indptr[row])
+
+        if i == 0:
+            indices[cursor] = row
+            data[cursor] = 1.0
+            b[row] = p_inner
+            continue
+        if i == n_r - 1:
+            indices[cursor] = row
+            data[cursor] = 1.0
+            b[row] = p_outer
+            continue
+
+        r_i = r_inner + i * dr
+        diag = 0.0
+        coefficient = face_k(gaps[i, j], gaps[i + 1, j])
+        if coefficient > 0.0:
+            coefficient *= (
+                r_inner + (i + 0.5) * dr
+            ) / (dr * dr)
+            diag += coefficient
+            if i + 1 == n_r - 1:
+                b[row] += coefficient * p_outer
+            else:
+                neighbor = int(grid_to_dof[(i + 1) * n_theta + j])
+                if neighbor >= 0:
+                    indices[cursor] = neighbor
+                    data[cursor] = -coefficient
+                    cursor += 1
+
+        coefficient = face_k(gaps[i, j], gaps[i - 1, j])
+        if coefficient > 0.0:
+            coefficient *= (
+                r_inner + (i - 0.5) * dr
+            ) / (dr * dr)
+            diag += coefficient
+            if i - 1 == 0:
+                b[row] += coefficient * p_inner
+            else:
+                neighbor = int(grid_to_dof[(i - 1) * n_theta + j])
+                if neighbor >= 0:
+                    indices[cursor] = neighbor
+                    data[cursor] = -coefficient
+                    cursor += 1
+
+        if n_theta > 1 and dtheta > 0.0:
+            if theta_bc_code == THETA_BC_PERIODIC:
+                j_plus = (j + 1) % n_theta
+                neighbor = int(grid_to_dof[i * n_theta + j_plus])
+                if neighbor >= 0:
+                    coefficient = face_k(gaps[i, j], gaps[i, j_plus])
+                    coefficient /= r_i * dtheta_sq
+                    indices[cursor] = neighbor
+                    data[cursor] = -coefficient
+                    cursor += 1
+                    diag += coefficient
+
+                j_minus = (j - 1) % n_theta
+                neighbor = int(grid_to_dof[i * n_theta + j_minus])
+                if neighbor >= 0:
+                    coefficient = face_k(gaps[i, j], gaps[i, j_minus])
+                    coefficient /= r_i * dtheta_sq
+                    indices[cursor] = neighbor
+                    data[cursor] = -coefficient
+                    cursor += 1
+                    diag += coefficient
+            else:
+                if j + 1 < n_theta:
+                    neighbor = int(grid_to_dof[i * n_theta + j + 1])
+                    if neighbor >= 0:
+                        coefficient = face_k(gaps[i, j], gaps[i, j + 1])
+                        coefficient /= r_i * dtheta_sq
+                        indices[cursor] = neighbor
+                        data[cursor] = -coefficient
+                        cursor += 1
+                        diag += coefficient
+                if j > 0:
+                    neighbor = int(grid_to_dof[i * n_theta + j - 1])
+                    if neighbor >= 0:
+                        coefficient = face_k(gaps[i, j], gaps[i, j - 1])
+                        coefficient /= r_i * dtheta_sq
+                        indices[cursor] = neighbor
+                        data[cursor] = -coefficient
+                        cursor += 1
+                        diag += coefficient
+
+        indices[cursor] = row
+        data[cursor] = diag
+
+
+@njit
+def _fill_active_matrix_csr_polar(
+    n_r,
+    n_theta,
+    gaps,
+    r_inner,
+    dr,
+    dtheta,
+    p_inner,
+    p_outer,
+    theta_bc_code,
+    grid_to_dof,
+    dof_to_grid,
+    indptr,
+):
+    active_count = dof_to_grid.size
+    indices = np.empty(int(indptr[-1]), dtype=np.int32)
+    data = np.empty(int(indptr[-1]), dtype=np.float64)
+    b = np.zeros(active_count, dtype=np.float64)
+    _fill_active_matrix_csr_polar_into(
+        n_r,
+        n_theta,
+        gaps,
+        r_inner,
+        dr,
+        dtheta,
+        p_inner,
+        p_outer,
+        theta_bc_code,
+        grid_to_dof,
+        dof_to_grid,
+        indptr,
+        indices,
+        data,
+        b,
+    )
+    return indices, data, b
+
+
+def create_active_diffusion_matrix_polar(
+    gaps: np.ndarray,
     r_inner: float,
+    r_outer: float,
+    theta_extent: float,
     theta_bc_code: int,
     p_inner: float,
     p_outer: float,
+):
+    """Create a compact polar matrix containing positive cells only."""
+    gaps = validate_gap_array(
+        gaps, geometry="Polar", minimum_shape=(2, 1)
+    )
+    if r_inner <= 0.0 or r_outer <= r_inner:
+        raise ValueError("Require 0 < r_inner < r_outer.")
+    if theta_extent <= 0.0 or not np.isfinite(theta_extent):
+        raise ValueError("Angular extent must be finite and positive.")
+    n_r, n_theta = gaps.shape
+    dr = (r_outer - r_inner) / (n_r - 1)
+    if n_theta <= 1:
+        dtheta = theta_extent
+    elif theta_bc_code == THETA_BC_PERIODIC:
+        dtheta = theta_extent / n_theta
+    else:
+        dtheta = theta_extent / (n_theta - 1)
+
+    grid_to_dof, dof_to_grid = build_active_mapping(gaps)
+    active_count = dof_to_grid.size
+    counts = _count_active_matrix_entries_polar(
+        n_r, n_theta, theta_bc_code, grid_to_dof, dof_to_grid
+    )
+    indptr = indptr_from_counts(counts)
+    indices, data, b = _fill_active_matrix_csr_polar(
+        n_r,
+        n_theta,
+        gaps,
+        r_inner,
+        dr,
+        dtheta,
+        p_inner,
+        p_outer,
+        theta_bc_code,
+        grid_to_dof,
+        dof_to_grid,
+        indptr,
+    )
+    matrix = csr_matrix(
+        (data, indices, indptr),
+        shape=(active_count, active_count),
+        dtype=np.float64,
+    )
+    matrix.sort_indices()
+    return matrix, b, dr, dtheta, dof_to_grid
+
+
+def _create_solver_matrix_polar(
     gaps: np.ndarray,
+    r_inner: float,
+    r_outer: float,
+    theta_extent: float,
+    theta_bc_code: int,
+    p_inner: float,
+    p_outer: float,
+):
+    if np.all(gaps > 0.0):
+        matrix, rhs, dr, dtheta = create_diffusion_matrix_polar(
+            gaps,
+            r_inner,
+            r_outer,
+            theta_extent,
+            theta_bc_code,
+            p_inner,
+            p_outer,
+        )
+        return matrix, rhs, dr, dtheta, None
+    return create_active_diffusion_matrix_polar(
+        gaps,
+        r_inner,
+        r_outer,
+        theta_extent,
+        theta_bc_code,
+        p_inner,
+        p_outer,
+    )
+
+
+@njit
+def _calculate_face_fluxes_polar(
+    gaps: np.ndarray,
+    pressure: np.ndarray,
+    r_inner: float,
+    dr: float,
+    dtheta: float,
+    theta_bc_code: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    dpdr = np.zeros((n_r, n_theta))
-    dpdtheta = np.zeros((n_r, n_theta))
+    """Calculate conservative radial and angular face-flux densities."""
+    n_r, n_theta = gaps.shape
+    flux_r = np.zeros((n_r - 1, n_theta), dtype=np.float64)
+    # Face j lies between angular samples j-1 and j. For periodic grids the
+    # last column duplicates face 0; for symmetry sectors both endpoints are 0.
+    flux_theta = np.zeros((n_r, n_theta + 1), dtype=np.float64)
+
+    for i in range(n_r - 1):
+        for j in range(n_theta):
+            conductivity = face_k(gaps[i, j], gaps[i + 1, j])
+            if conductivity > 0.0:
+                flux_r[i, j] = -conductivity * (
+                    pressure[i + 1, j] - pressure[i, j]
+                ) / dr
+
+    if n_theta > 1 and dtheta > 0.0:
+        for i in range(n_r):
+            r_i = r_inner + i * dr
+            if theta_bc_code == THETA_BC_PERIODIC:
+                conductivity = face_k(gaps[i, n_theta - 1], gaps[i, 0])
+                if conductivity > 0.0:
+                    flux_theta[i, 0] = -conductivity * (
+                        pressure[i, 0] - pressure[i, n_theta - 1]
+                    ) / (r_i * dtheta)
+                flux_theta[i, n_theta] = flux_theta[i, 0]
+
+            for j in range(1, n_theta):
+                conductivity = face_k(gaps[i, j - 1], gaps[i, j])
+                if conductivity > 0.0:
+                    flux_theta[i, j] = -conductivity * (
+                        pressure[i, j] - pressure[i, j - 1]
+                    ) / (r_i * dtheta)
+
+    return flux_r, flux_theta
+
+
+@njit
+def _cell_flux_from_faces_polar(
+    gaps: np.ndarray,
+    flux_r: np.ndarray,
+    flux_theta: np.ndarray,
+    r_inner: float,
+    dr: float,
+) -> np.ndarray:
+    """Construct legacy node-shaped polar flux while conserving boundary flow."""
+    n_r, n_theta = gaps.shape
+    flux = np.empty((n_r, n_theta, 2), dtype=np.float64)
+    r_outer = r_inner + (n_r - 1) * dr
 
     for i in range(n_r):
         r_i = r_inner + i * dr
         for j in range(n_theta):
             if gaps[i, j] <= 0.0:
+                flux[i, j, 0] = np.nan
+                flux[i, j, 1] = np.nan
                 continue
 
             if i == 0:
-                if n_r > 1:
-                    dpdr[i, j] = (p[1, j] - p_inner) / dr
-                else:
-                    dpdr[i, j] = 0.0
+                r_face = r_inner + 0.5 * dr
+                flux[i, j, 0] = flux_r[0, j] * r_face / r_inner
             elif i == n_r - 1:
-                dpdr[i, j] = (p_outer - p[i - 1, j]) / dr
+                r_face = r_outer - 0.5 * dr
+                flux[i, j, 0] = flux_r[n_r - 2, j] * r_face / r_outer
             else:
-                dpdr[i, j] = (p[i + 1, j] - p[i - 1, j]) / (2.0 * dr)
+                r_minus = r_i - 0.5 * dr
+                r_plus = r_i + 0.5 * dr
+                flux[i, j, 0] = 0.5 * (
+                    flux_r[i - 1, j] * r_minus
+                    + flux_r[i, j] * r_plus
+                ) / r_i
 
-            if n_theta > 1 and dtheta > 0.0:
-                if theta_bc_code == THETA_BC_PERIODIC:
-                    j_plus = (j + 1) % n_theta
-                    j_minus = (j - 1 + n_theta) % n_theta
-                    dpdtheta[i, j] = (p[i, j_plus] - p[i, j_minus]) / (2.0 * dtheta)
-                else:
-                    if j == 0 or j == n_theta - 1:
-                        dpdtheta[i, j] = 0.0
-                    else:
-                        dpdtheta[i, j] = (p[i, j + 1] - p[i, j - 1]) / (2.0 * dtheta)
-
-    return dpdr, dpdtheta
-
-
-@jit(nopython=True)
-def _calculate_flux_polar(
-    n_r: int,
-    n_theta: int,
-    r_inner: float,
-    dr: float,
-    gaps: np.ndarray,
-    dpdr: np.ndarray,
-    dpdtheta: np.ndarray,
-) -> np.ndarray:
-    flux = np.empty((n_r, n_theta, 2), dtype=np.float64)
-
-    for i in range(n_r):
-        r_i = r_inner + i * dr
-        for j in range(n_theta):
-            conductivity = gaps[i, j] ** 3
-            if conductivity <= 0.0:
-                flux[i, j, 0] = np.nan
-                flux[i, j, 1] = np.nan
-            else:
-                flux[i, j, 0] = -conductivity * dpdr[i, j]
-                if r_i > 0.0:
-                    flux[i, j, 1] = -conductivity * dpdtheta[i, j] / r_i
-                else:
-                    flux[i, j, 1] = 0.0
+            flux[i, j, 1] = 0.5 * (
+                flux_theta[i, j] + flux_theta[i, j + 1]
+            )
 
     return flux
 
@@ -309,7 +646,7 @@ def solve_diffusion_polar(
     r_outer: float,
     theta_extent: float,
     theta_bc_code: int,
-    solver: str = "pardiso",
+    solver: str = "auto",
     rtol: Optional[float] = None,
     p_inner: float = 1.0,
     p_outer: float = 0.0,
@@ -317,215 +654,276 @@ def solve_diffusion_polar(
     save_matrix_type: str = "coo",
 ) -> Tuple[np.ndarray, float, float]:
     """Solve the diffusion problem in polar coordinates."""
-    mean_gap = np.mean(gaps)
-    if mean_gap <= 0.0:
-        raise ValueError("Invalid gap field.")
+    gaps = validate_gap_array(
+        gaps, geometry="Polar", minimum_shape=(2, 1)
+    )
+    if not np.any(gaps > 0.0):
+        raise InvalidGapError("Polar gap field has no positive cells.")
 
-    A, b, dr, dtheta = create_diffusion_matrix_polar(
+    A, b, dr, dtheta, dof_to_grid = _create_solver_matrix_polar(
         gaps, r_inner, r_outer, theta_extent, theta_bc_code, p_inner, p_outer
     )
 
     if save_matrix:
         logger.info(f"Saving transport matrix and RHS to npz files in {save_matrix_type} format.")
         if save_matrix_type == "coo":
-            save_npz("transport_matrix_polar.npz", A, compressed=True)
+            save_npz("transport_matrix_polar.npz", A.tocoo(), compressed=True)
         elif save_matrix_type == "csr":
             save_npz("transport_matrix_polar.npz", A.tocsr(), compressed=True)
         elif save_matrix_type == "csc":
             save_npz("transport_matrix_polar.npz", A.tocsc(), compressed=True)
         else:
             logger.warning(f"Unknown save_matrix_type: {save_matrix_type}, defaulting to 'coo'.")
-            save_npz("transport_matrix_polar.npz", A, compressed=True)
+            save_npz("transport_matrix_polar.npz", A.tocoo(), compressed=True)
         np.savez_compressed("transport_rhs_polar.npz", b=b)
 
-    solver_options = [
-        "none",
-        "auto",
-        "cholesky",
-        "pardiso",
-        "scipy-spsolve",
-        "scipy",
-        "petsc-cg",
-        "petsc-mumps",
-    ]
-
-    if '.' in solver:
-        solver_name, preconditioner = solver.split('.')
-    else:
-        solver_name = solver
-        preconditioner = None
-
-    if solver_name not in solver_options:
-        logger.warning(
-            f"Unknown solver: {solver_name}, using 'petsc-cg' with 'hypre' preconditioner instead."
-        )
-        solver_name = "petsc-cg"
-        preconditioner = "hypre"
-
-    if solver_name in {"none", "auto"}:
-        solver_name = "petsc-cg"
-        if preconditioner is None:
-            preconditioner = "hypre"
-        logger.info("Auto-selecting 'petsc-cg' solver with 'hypre' preconditioner.")
-
-    if solver_name in {"scipy", "petsc-cg"}:
-        if rtol is not None:
-            logger.info(f"Using user-defined relative tolerance for iterative solver: {rtol:.3e}")
-        else:
-            max_gap_cubed = np.max(gaps ** 3)
-            if max_gap_cubed > 0:
-                rtol = min(1e-10, max_gap_cubed * 1e-12)
-                logger.info(f"Setting relative tolerance for iterative solver to {rtol:.3e} based on max gap.")
-            else:
-                raise ValueError("Invalid gap field for tolerance calculation.")
-
-    if solver_name == "cholesky":
-        logger.info("Using CHOLMOD solver from scikit-sparse.")
-        from sksparse.cholmod import cholesky
-
-        A_csc = A.tocsc()
-        factor = cholesky(A_csc)
-        solution = factor.solve_A(b)
-    elif solver_name == "pardiso":
-        logger.info("Using PARDISO solver from Intel oneAPI MKL.")
-        import pypardiso
-
-        A_csr = A.tocsr()
-        pardiso_solver = pypardiso.PyPardisoSolver()
-        pardiso_solver.set_iparm(1, 1)
-        pardiso_solver.set_iparm(24, 1)
-        pardiso_solver.set_matrix_type(1)
-        solution = pardiso_solver.solve(A_csr, b)
-    elif solver_name == "scipy":
-        logger.info("Using SciPy Conjugate Gradient iterative solver.")
-        from scipy.sparse.linalg import cg
-
-        A_csr = A.tocsr()
-        _preconditioner = preconditioner
-        if preconditioner == "amg-sa":
-            _preconditioner = "amg-smooth_aggregation"
-        elif preconditioner == "amg-rs":
-            _preconditioner = "amg-rs"
-        elif preconditioner is None:
-            _preconditioner = "amg-rs"
-
-        try:
-            M = get_preconditioner(A_csr, method=_preconditioner)
-        except Exception as exc:
-            logger.error("Failed to create AMG preconditioner. Error: %s", str(exc))
-            raise RuntimeError("Failed to create AMG preconditioner.") from exc
-
-        solution, info = cg(A_csr, b, M=M, rtol=rtol, maxiter=6000)
-
-        if info > 0:
-            logger.warning(f"Convergence to tolerance not achieved in {info} iterations.")
-        elif info < 0:
-            logger.error(f"Illegal input or breakdown: {info}.")
-    elif solver_name == "petsc-cg":
-        from petsc4py import PETSc
-
-        A_csr = A.tocsr()
-        petsc_mat = PETSc.Mat().createAIJ(size=A_csr.shape, csr=(A_csr.indptr, A_csr.indices, A_csr.data))
-        ksp = PETSc.KSP().create()
-        ksp.setOperators(petsc_mat)
-        ksp.setType('gmres')
-        try:
-            ksp.setGMRESRestart(200)
-        except AttributeError:
-            pass
-
-        pc = ksp.getPC()
-        if preconditioner == "gamg":
-            pc.setType('gamg')
-        elif preconditioner == "hypre":
-            pc.setType('hypre')
-            try:
-                pc.setHYPREType('boomeramg')
-            except Exception:
-                logger.debug("Could not set HYPRE type to boomeramg; continuing with default.")
-        elif preconditioner == "ilu":
-            pc.setType('ilu')
-        else:
-            logger.info(f"Unknown preconditioner {preconditioner}. Using default ILU preconditioner.")
-            pc.setType('ilu')
-
-        if rtol is not None:
-            ksp.setTolerances(rtol=rtol)
-        ksp.setFromOptions()
-
-        b_vec = PETSc.Vec().createWithArray(b)
-        x_vec = b_vec.duplicate()
-        ksp.solve(b_vec, x_vec)
-
-        reason = ksp.getConvergedReason()
-        if reason <= 0:
-            logger.warning(
-                "PETSc solver failed to converge (reason=%d, residual=%.3e). Falling back to SciPy spsolve.",
-                reason,
-                ksp.getResidualNorm(),
-            )
-            from scipy.sparse.linalg import spsolve
-
-            solution = spsolve(A_csr.tocsc(), b)
-        else:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "PETSc converged in %d iterations with residual %.3e",
-                    ksp.getIterationNumber(),
-                    ksp.getResidualNorm(),
-                )
-            solution = x_vec.getArray().copy()
-    elif solver_name == "petsc-mumps":
-        logger.info("Using PETSc MUMPS direct solver.")
-        from petsc4py import PETSc
-
-        A_csr = A.tocsr()
-        petsc_mat = PETSc.Mat().createAIJ(size=A.shape, csr=(A_csr.indptr, A_csr.indices, A_csr.data))
-        b_vec = PETSc.Vec().createWithArray(b)
-        x_vec = b_vec.duplicate()
-
-        ksp = PETSc.KSP().create()
-        ksp.setOperators(petsc_mat)
-        ksp.setType('preonly')
-        pc = ksp.getPC()
-        pc.setType('lu')
-        pc.setFactorSolverType('mumps')
-        ksp.setFromOptions()
-        ksp.solve(b_vec, x_vec)
-        solution = x_vec.getArray()
-    else:
-        raise ValueError(f"Solver '{solver_name}' is not supported in polar solver.")
-
-    return solution.reshape(gaps.shape), dr, dtheta
+    effective_rtol = DEFAULT_RTOL if rtol is None else rtol
+    result = solve_linear_system(A, b, solver=solver, rtol=effective_rtol)
+    logger.info(
+        "Linear solver %s finished (iterations=%s, relative residual=%.3e).",
+        result.solver,
+        result.iterations,
+        result.relative_residual,
+    )
+    pressure = reconstruct_full_solution(
+        gaps.shape, result.solution, dof_to_grid
+    )
+    return pressure, dr, dtheta
 
 
 def connectivity_analysis_polar(gaps: np.ndarray, theta_bc_code: int) -> Optional[np.ndarray]:
     """Detect percolation between inner and outer radius."""
-    binary = gaps > 0
-    n_r, n_theta = gaps.shape
-    labels = label(binary, connectivity=1)
+    periodic_axis = 1 if theta_bc_code == THETA_BC_PERIODIC else None
+    mask = find_spanning_mask(
+        gaps, transport_axis=0, periodic_axis=periodic_axis
+    )
+    if mask is None:
+        logger.info("No percolation detected between inner and outer boundaries.")
+        return None
+    logger.info("Radially percolating channel detected.")
+    return np.where(mask, gaps, 0.0)
 
-    if theta_bc_code == THETA_BC_PERIODIC and n_theta > 1:
-        left_boundary = labels[:, 0]
-        right_boundary = labels[:, -1]
-        for i in range(n_r):
-            left_label = left_boundary[i]
-            right_label = right_boundary[i]
-            if left_label > 0 and right_label > 0 and left_label != right_label:
-                labels[labels == right_label] = left_label
 
-    inner_labels = set(labels[0, :]) - {0}
-    outer_labels = set(labels[-1, :]) - {0}
+@dataclass
+class PreparedPolarProblem:
+    """Reusable polar topology and CSR sparsity for gap-value sequences."""
 
-    percolating_labels = inner_labels & outer_labels
+    shape: tuple[int, int]
+    original_open_mask: np.ndarray
+    spanning_mask: np.ndarray
+    grid_to_dof: np.ndarray
+    dof_to_grid: np.ndarray
+    indptr: np.ndarray
+    indices: np.ndarray
+    r_inner: float
+    r_outer: float
+    theta_extent: float
+    theta_bc_code: int
+    theta_bc_name: str
+    p_inner: float
+    p_outer: float
+    dr: float
+    dtheta: float
+    _amg_preconditioner: object = field(default=None, init=False, repr=False)
+    _amg_method: str | None = field(default=None, init=False, repr=False)
 
-    if percolating_labels:
-        selected_label = next(iter(percolating_labels))
-        logger.info(f"Percolation detected with label {selected_label}.")
-        return gaps * (labels == selected_label)
+    def _filtered_values(self, gaps) -> np.ndarray:
+        values = validate_gap_array(
+            gaps, geometry="Polar", minimum_shape=(2, 1)
+        )
+        if values.shape != self.shape:
+            raise InvalidGapError(
+                f"Prepared polar topology has shape {self.shape}, got {values.shape}."
+            )
+        if not np.array_equal(values > 0.0, self.original_open_mask):
+            raise InvalidGapError(
+                "Gap open/closed topology changed; prepare a new polar problem."
+            )
+        return np.where(self.spanning_mask, values, 0.0)
 
-    logger.info("No percolation detected between inner and outer boundaries.")
-    return None
+    def assemble(self, gaps):
+        """Update coefficients/RHS while reusing mappings and CSR structure."""
+        values = self._filtered_values(gaps)
+        data = np.empty(self.indices.size, dtype=np.float64)
+        rhs = np.zeros(self.dof_to_grid.size, dtype=np.float64)
+        _fill_active_matrix_csr_polar_into(
+            self.shape[0],
+            self.shape[1],
+            values,
+            self.r_inner,
+            self.dr,
+            self.dtheta,
+            self.p_inner,
+            self.p_outer,
+            self.theta_bc_code,
+            self.grid_to_dof,
+            self.dof_to_grid,
+            self.indptr,
+            self.indices,
+            data,
+            rhs,
+        )
+        matrix = csr_matrix(
+            (data, self.indices, self.indptr),
+            shape=(self.dof_to_grid.size, self.dof_to_grid.size),
+            copy=False,
+        )
+        matrix.sort_indices()
+        return matrix, rhs, values
+
+    def clear_preconditioner(self):
+        """Discard a cached AMG hierarchy before a strongly changed sequence."""
+        self._amg_preconditioner = None
+        self._amg_method = None
+
+    def solve_with_diagnostics(
+        self,
+        gaps,
+        solver="auto",
+        rtol=DEFAULT_RTOL,
+        reuse_preconditioner=False,
+    ):
+        matrix, rhs, values = self.assemble(gaps)
+        preconditioner = None
+        if reuse_preconditioner:
+            normalized = normalize_solver_name(solver)
+            if normalized == "auto":
+                normalized = "scipy.amg-rs"
+            if not normalized.startswith("scipy.amg-"):
+                raise ValueError(
+                    "Prepared preconditioner reuse requires a SciPy AMG solver."
+                )
+            method = normalized.split(".", maxsplit=1)[1]
+            if self._amg_preconditioner is None or self._amg_method != method:
+                self._amg_preconditioner = build_amg_preconditioner(
+                    matrix, method
+                )
+                self._amg_method = method
+            preconditioner = self._amg_preconditioner
+        result = solve_linear_system(
+            matrix,
+            rhs,
+            solver=solver,
+            rtol=rtol,
+            preconditioner=preconditioner,
+        )
+        pressure = reconstruct_full_solution(
+            values.shape, result.solution, self.dof_to_grid
+        )
+        inner_mask = values[0, :] > 0.0
+        outer_mask = values[-1, :] > 0.0
+        pressure[0, inner_mask] = self.p_inner
+        pressure[-1, outer_mask] = self.p_outer
+        flux_r, flux_theta = _calculate_face_fluxes_polar(
+            values,
+            pressure,
+            self.r_inner,
+            self.dr,
+            self.dtheta,
+            self.theta_bc_code,
+        )
+        flux = _cell_flux_from_faces_polar(
+            values, flux_r, flux_theta, self.r_inner, self.dr
+        )
+        flux[~self.spanning_mask] = np.nan
+        return values, pressure, flux, self.dr, self.dtheta, result
+
+    def solve(
+        self,
+        gaps,
+        solver="auto",
+        rtol=DEFAULT_RTOL,
+        reuse_preconditioner=False,
+    ):
+        values, pressure, flux, dr, dtheta, _ = self.solve_with_diagnostics(
+            gaps,
+            solver=solver,
+            rtol=rtol,
+            reuse_preconditioner=reuse_preconditioner,
+        )
+        return values, pressure, flux, dr, dtheta
+
+
+def prepare_fluid_problem_polar(
+    gaps,
+    r_inner: float,
+    r_outer: float,
+    *,
+    theta_extent: float = 2.0 * np.pi,
+    theta_bc: str = "auto",
+    p_inner: float = 1.0,
+    p_outer: float = 0.0,
+):
+    """Prepare reusable polar connectivity, mappings, and CSR topology."""
+    values = validate_gap_array(
+        gaps, geometry="Polar", minimum_shape=(2, 1)
+    )
+    if r_inner <= 0.0 or r_outer <= r_inner:
+        raise ValueError("Require 0 < r_inner < r_outer.")
+    if theta_extent <= 0.0 or not np.isfinite(theta_extent):
+        raise ValueError("Angular extent must be finite and positive.")
+    if theta_bc == "auto":
+        theta_bc = (
+            "periodic" if np.isclose(theta_extent, 2.0 * np.pi) else "symmetry"
+        )
+    theta_bc_name = theta_bc.lower()
+    if theta_bc_name not in {"periodic", "symmetry"}:
+        raise ValueError("theta_bc must be 'auto', 'periodic', or 'symmetry'.")
+    theta_bc_code = (
+        THETA_BC_PERIODIC
+        if theta_bc_name == "periodic"
+        else THETA_BC_SYMMETRY
+    )
+
+    filtered = connectivity_analysis_polar(values, theta_bc_code)
+    if filtered is None:
+        return None
+    n_r, n_theta = values.shape
+    dr = (r_outer - r_inner) / (n_r - 1)
+    if n_theta == 1:
+        dtheta = theta_extent
+    elif theta_bc_code == THETA_BC_PERIODIC:
+        dtheta = theta_extent / n_theta
+    else:
+        dtheta = theta_extent / (n_theta - 1)
+
+    grid_to_dof, dof_to_grid = build_active_mapping(filtered)
+    counts = _count_active_matrix_entries_polar(
+        n_r, n_theta, theta_bc_code, grid_to_dof, dof_to_grid
+    )
+    indptr = indptr_from_counts(counts)
+    indices, _, _ = _fill_active_matrix_csr_polar(
+        n_r,
+        n_theta,
+        filtered,
+        r_inner,
+        dr,
+        dtheta,
+        p_inner,
+        p_outer,
+        theta_bc_code,
+        grid_to_dof,
+        dof_to_grid,
+        indptr,
+    )
+    return PreparedPolarProblem(
+        shape=values.shape,
+        original_open_mask=(values > 0.0).copy(),
+        spanning_mask=(filtered > 0.0).copy(),
+        grid_to_dof=grid_to_dof,
+        dof_to_grid=dof_to_grid,
+        indptr=indptr,
+        indices=indices,
+        r_inner=r_inner,
+        r_outer=r_outer,
+        theta_extent=theta_extent,
+        theta_bc_code=theta_bc_code,
+        theta_bc_name=theta_bc_name,
+        p_inner=p_inner,
+        p_outer=p_outer,
+        dr=dr,
+        dtheta=dtheta,
+    )
 
 
 @jit(nopython=True)
@@ -575,7 +973,7 @@ def solve_fluid_problem_polar(
     theta_bc: str = "auto",
     p_inner: float = 1.0,
     p_outer: float = 0.0,
-    dilation_iterations: int = 1,
+    dilation_iterations: int = 0,
     save_matrix: bool = False,
     save_matrix_type: str = "coo",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
@@ -604,7 +1002,8 @@ def solve_fluid_problem_polar(
     p_outer : float, optional
         Pressure at the outer radius.
     dilation_iterations : int, optional
-        Number of dilation iterations applied before solving (default 1).
+        Number of explicit geometry-dilation iterations (default 0). Positive
+        values modify the solved channel and are retained for experiments.
     save_matrix : bool, optional
         If True, store matrix and RHS to disk for debugging.
     save_matrix_type : str, optional
@@ -616,8 +1015,9 @@ def solve_fluid_problem_polar(
     """
     logger.info("Starting polar fluid solver.")
 
-    if gaps.ndim != 2:
-        raise ValueError("Gap field must be a 2D array (n_r, n_theta).")
+    gaps = validate_gap_array(
+        gaps, geometry="Polar", minimum_shape=(2, 1)
+    )
 
     n_r, n_theta = gaps.shape
     if n_r < 2:
@@ -628,6 +1028,8 @@ def solve_fluid_problem_polar(
         raise ValueError("Outer radius must exceed inner radius.")
     if theta_extent <= 0.0:
         raise ValueError("Angular extent must be positive.")
+    if not isinstance(dilation_iterations, (int, np.integer)) or dilation_iterations < 0:
+        raise ValueError("dilation_iterations must be a non-negative integer.")
 
     if theta_bc == "auto":
         theta_bc = "periodic" if np.isclose(theta_extent, 2.0 * np.pi) else "symmetry"
@@ -653,25 +1055,21 @@ def solve_fluid_problem_polar(
         gaps_dilated = gaps_filtered
 
     logger.info("Solving diffusion problem in polar coordinates.")
-    try:
-        start_time = time.time()
-        pressure, dr, dtheta = solve_diffusion_polar(
-            gaps_dilated,
-            r_inner,
-            r_outer,
-            theta_extent,
-            theta_bc_code,
-            solver=solver,
-            rtol=rtol,
-            p_inner=p_inner,
-            p_outer=p_outer,
-            save_matrix=save_matrix,
-            save_matrix_type=save_matrix_type,
-        )
-        logger.info("Fluid solver: CPU time = %.3f sec", time.time() - start_time)
-    except Exception as exc:
-        logger.error("Error in polar fluid solver: %s", str(exc))
-        return None, None, None, None, None
+    start_time = time.time()
+    pressure, dr, dtheta = solve_diffusion_polar(
+        gaps_dilated,
+        r_inner,
+        r_outer,
+        theta_extent,
+        theta_bc_code,
+        solver=solver,
+        rtol=rtol,
+        p_inner=p_inner,
+        p_outer=p_outer,
+        save_matrix=save_matrix,
+        save_matrix_type=save_matrix_type,
+    )
+    logger.info("Fluid solver: CPU time = %.3f sec", time.time() - start_time)
 
     # Explicitly enforce Dirichlet boundary values (useful after iterative solves)
     if n_theta > 0:
@@ -682,21 +1080,18 @@ def solve_fluid_problem_polar(
         if np.any(outer_mask):
             pressure[-1, outer_mask] = p_outer
 
-    logger.info("Calculating gradients and flux.")
-    dpdr, dpdtheta = _calculate_gradients_polar(
-        n_r,
-        n_theta,
+    logger.info("Calculating conservative face and visualization flux.")
+    flux_r, flux_theta = _calculate_face_fluxes_polar(
+        gaps_dilated,
         pressure,
+        r_inner,
         dr,
         dtheta,
-        r_inner,
         theta_bc_code,
-        p_inner,
-        p_outer,
-        gaps_dilated,
     )
-
-    flux = _calculate_flux_polar(n_r, n_theta, r_inner, dr, gaps_dilated, dpdr, dpdtheta)
+    flux = _cell_flux_from_faces_polar(
+        gaps_dilated, flux_r, flux_theta, r_inner, dr
+    )
 
     # Mask flux outside the original percolating channel
     channel_mask = gaps_filtered > 0.0
@@ -708,33 +1103,12 @@ def solve_fluid_problem_polar(
 
 
 def get_preconditioner(A, method="amg-rs"):
-    if method == "amg-smooth_aggregation":
-        import pyamg
-        from scipy.sparse.linalg import LinearOperator
-
-        try:
-            logger.info("Using Smoothed Aggregation AMG preconditioner.")
-            ml = pyamg.smoothed_aggregation_solver(A, max_coarse=A.shape[0] // 1000)
-            M = ml.aspreconditioner(cycle='V')
-            return M
-        except Exception:
-            logger.warning("AMG smooth aggregation failed, falling back to AMG.RS.")
-            method = "amg-rs"
-
-    if method == "amg-rs":
-        import pyamg
-        from scipy.sparse.linalg import LinearOperator
-
-        logger.info("Using Ruge-Stuben AMG preconditioner.")
-        try:
-            ml = pyamg.ruge_stuben_solver(A, max_coarse=A.shape[0] // 1000, CF='RS')
-            M = LinearOperator(A.shape, matvec=lambda v: ml.solve(v, tol=1e-2, maxiter=1))
-            return M
-        except Exception as exc:
-            logger.warning("AMG.RS failed (%s), cannot construct preconditioner.", str(exc))
-            raise RuntimeError("AMG.RS failed")
-
-    raise ValueError(f"Unknown preconditioner method: {method}")
+    """Backward-compatible wrapper around the shared AMG implementation."""
+    aliases = {
+        "amg.rs": "amg-rs",
+        "amg-sa": "amg-smooth_aggregation",
+    }
+    return build_amg_preconditioner(A, aliases.get(method, method))
 
 
 def compute_total_flux_polar(
@@ -743,6 +1117,7 @@ def compute_total_flux_polar(
     r_inner: float,
     r_outer: float,
     dtheta: float,
+    theta_bc: str = "periodic",
 ) -> Tuple[float, float]:
     """
     Compute total flux and conservation error across inner and outer boundaries.
@@ -751,22 +1126,46 @@ def compute_total_flux_polar(
     if filtered_gaps is None or flux is None:
         raise ValueError("Flux computation requires valid gaps and flux arrays.")
 
+    filtered_gaps = np.asarray(filtered_gaps)
+    flux = np.asarray(flux)
+    if filtered_gaps.ndim != 2 or flux.shape != filtered_gaps.shape + (2,):
+        raise ValueError(
+            "Expected gaps with shape (n_r, n_theta) and flux with shape "
+            "(n_r, n_theta, 2)."
+        )
+    if r_inner <= 0.0 or r_outer <= r_inner:
+        raise ValueError("Require 0 < r_inner < r_outer.")
+    if dtheta <= 0.0 or not np.isfinite(dtheta):
+        raise ValueError("dtheta must be finite and positive.")
+
     n_r, n_theta = filtered_gaps.shape
     if n_r < 2:
         raise ValueError("Flux computation requires at least two radial nodes.")
+
+    theta_bc_lower = theta_bc.lower()
+    if theta_bc_lower not in {"periodic", "symmetry"}:
+        raise ValueError("theta_bc must be 'periodic' or 'symmetry'.")
 
     flux_inner = 0.0
     active_inner = 0
     for j in range(n_theta):
         if not np.isnan(flux[0, j, 0]) and filtered_gaps[0, j] > 0:
-            flux_inner += flux[0, j, 0] * r_inner * dtheta
+            weight = 1.0
+            if theta_bc_lower == "symmetry" and n_theta > 1:
+                if j == 0 or j == n_theta - 1:
+                    weight = 0.5
+            flux_inner += flux[0, j, 0] * r_inner * dtheta * weight
             active_inner += 1
 
     flux_outer = 0.0
     active_outer = 0
     for j in range(n_theta):
         if not np.isnan(flux[-1, j, 0]) and filtered_gaps[-1, j] > 0:
-            flux_outer += flux[-1, j, 0] * r_outer * dtheta
+            weight = 1.0
+            if theta_bc_lower == "symmetry" and n_theta > 1:
+                if j == 0 or j == n_theta - 1:
+                    weight = 0.5
+            flux_outer += flux[-1, j, 0] * r_outer * dtheta * weight
             active_outer += 1
 
     Q_total = 0.5 * (abs(flux_inner) + abs(flux_outer))
@@ -789,68 +1188,51 @@ def compute_total_flux_polar(
     return Q_total, flux_conservation_error
 
 
-def _warmup_numba_functions_polar():
-    """Warm up Numba JIT compilation with minimal test cases."""
-    logger.info("Warming up polar Numba JIT compilation...")
-    n_r_test = 3
-    n_theta_test = 4
-    g_test = np.ones((n_r_test, n_theta_test), dtype=np.float64) * 0.1
-    dr_test = 0.1
-    dtheta_test = 2.0 * np.pi / n_theta_test
-    try:
-        _build_matrix_elements_polar(
-            n_r_test,
-            n_theta_test,
-            g_test,
-            1.0,
-            dr_test,
-            dtheta_test,
-            1.0,
-            0.0,
-            THETA_BC_PERIODIC,
-        )
-    except Exception:
-        pass
+def warmup_numba_functions_polar():
+    """Explicitly compile polar Numba kernels on tiny arrays."""
+    logger.info("Warming up polar Numba kernels.")
+    n_r, n_theta = 3, 4
+    gaps = np.full((n_r, n_theta), 0.1, dtype=np.float64)
+    create_diffusion_matrix_polar(
+        gaps,
+        1.0,
+        1.2,
+        2.0 * np.pi,
+        THETA_BC_PERIODIC,
+        1.0,
+        0.0,
+    )
 
-    try:
-        _calculate_gradients_polar(
-            n_r_test,
-            n_theta_test,
-            np.ones((n_r_test, n_theta_test), dtype=np.float64),
-            dr_test,
-            dtheta_test,
-            1.0,
-            THETA_BC_PERIODIC,
-            1.0,
-            0.0,
-            g_test,
-        )
-    except Exception:
-        pass
+    blocked = gaps.copy()
+    blocked[1, 1] = 0.0
+    create_active_diffusion_matrix_polar(
+        blocked,
+        1.0,
+        1.2,
+        2.0 * np.pi,
+        THETA_BC_PERIODIC,
+        1.0,
+        0.0,
+    )
+    _dilate_gaps_polar(blocked, 1, THETA_BC_PERIODIC)
 
-    try:
-        dpdr_test = np.ones((n_r_test, n_theta_test), dtype=np.float64)
-        dpdtheta_test = np.ones((n_r_test, n_theta_test), dtype=np.float64)
-        _calculate_flux_polar(
-            n_r_test,
-            n_theta_test,
-            1.0,
-            dr_test,
-            g_test,
-            dpdr_test,
-            dpdtheta_test,
-        )
-    except Exception:
-        pass
-
-    try:
-        _dilate_gaps_polar(g_test, 1, THETA_BC_PERIODIC)
-    except Exception:
-        pass
-
-    logger.info("Polar Numba JIT compilation warmed up.")
+    pressure = np.repeat(
+        np.linspace(1.0, 0.0, n_r, dtype=np.float64)[:, None],
+        n_theta,
+        axis=1,
+    )
+    dr = 0.1
+    dtheta = 2.0 * np.pi / n_theta
+    flux_r, flux_theta = _calculate_face_fluxes_polar(
+        gaps,
+        pressure,
+        1.0,
+        dr,
+        dtheta,
+        THETA_BC_PERIODIC,
+    )
+    _cell_flux_from_faces_polar(gaps, flux_r, flux_theta, 1.0, dr)
+    logger.info("Polar Numba kernels warmed up.")
 
 
-_warmup_numba_functions_polar()
-
-
+_warmup_numba_functions_polar = warmup_numba_functions_polar

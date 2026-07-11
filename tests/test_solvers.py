@@ -18,8 +18,9 @@ from datetime import datetime
 from reynoldsflow import transport as FS
 from rfgen import selfaffine_field
 
-# import pytest
-# pytestmark = pytest.mark.skip(reason="WIP: Long test, run manually when needed.")
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.backend]
 
 FS.setup_logging()
 FS.set_verbosity('warning')

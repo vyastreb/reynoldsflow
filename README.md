@@ -12,7 +12,7 @@ An efficient Python code to solve the diffusion equation on Cartesian and polar 
   ```
 + Inlet/outlet pressure:  
   ```math
-  p(x=0)=1,\quad p(x=1)=0
+  p(x=0)=0,\quad p(x=1)=1
   ```
 + Periodic boundary conditions:  
   ```math
@@ -27,7 +27,7 @@ An efficient Python code to solve the diffusion equation on Cartesian and polar 
 + It takes as input a gap field $g$.
 + It analyzes its connectivity and removes isolated islands and checks for percolation (whether a flow problem can be solved).
 + It dilates non-zero gap field to properly handle impenetrability of channels, it allows not to erode the domain for flux calculation.
-+ It applies an inlet pressure $p_i=1$  on one side $x=0$ and an outlet pressure $p_0=0$ on the opposite side $x=1$ and uses periodic boundary conditions on the lateral sides $y=\{0,1\}$.
++ It applies reservoir pressures $p(x=0)=0$ and $p(x=1)=1$ and uses periodic boundary conditions on the lateral sides $y=\{0,1\}$.
 + It constructs a sparse matrix with conductivity proportional to $g^3$.
 + Different solvers (direct and iterative with appropriate preconditioners) are selected and tuned to solve efficiently the resulting linear system of equations.
 + Total flux is properly computed.
@@ -38,12 +38,14 @@ An efficient Python code to solve the diffusion equation on Cartesian and polar 
 ```bash
 pip install reynoldsflow
 ```
-The default solver is `scipy.amg-rs` (SciPy CG + Ruge-Stüben AMG via `pyamg`), included in the base install.
+The `auto`/default solver is `scipy.amg-rs` (SciPy CG + Ruge-Stüben AMG via `pyamg`), included in the base install.
 For optional high-performance solvers (PARDISO, PETSc, CHOLMOD):
 ```bash
 pip install reynoldsflow[solvers]
 ```
-With `[solvers]`, `solver="auto"` selects `petsc-cg.hypre` as the fastest option.
+Native optional solvers are selected explicitly (for example,
+`solver="petsc-cg.hypre"`). They are not probed by `auto`, because an unusable
+local MPI/MKL stack can terminate before Python can perform a safe fallback.
 
 2. Run a minimal example (flow around a circular inclusion)
 ```python
@@ -62,16 +64,40 @@ if flux is not None:
     plt.show()
 ```
 
+Cartesian reservoir values default to `p_west=0` and `p_east=1` and can be
+overridden with keyword arguments to `solve_fluid_problem`.
+
 3. Run the test suite
 ```bash
 python -m pytest -q
 ```
+
+Large and optional-backend workloads require explicit flags; see `AGENTS.md`
+or `docs/plans/reynoldsflow-implementation-plan.md`.
 
 4. Or run these tests manually:
 + Solves the flux evolution problem: `/tests/test_evolution.py`
 + Solves flux problem on a Cartesian grid: `/tests/test_solve.py`
 + Solves flux problem on a polar grid: `/tests/polar_flow.py`
 + Tests all solvers: `/tests/test_solvers.py`.
+
+### Repeated fixed-topology solves
+
+When gap values change but the positive/blocked mask remains exactly the same,
+prepare connectivity and CSR topology once:
+
+```python
+prepared = FS.prepare_fluid_problem(gaps)
+for updated_gaps in gap_sequence:
+    filtered, pressure, flux = prepared.solve(
+        updated_gaps, solver="scipy.amg-rs"
+    )
+```
+
+The polar equivalent is `transport_polar.prepare_fluid_problem_polar(...)`.
+Prepared objects reject topology changes. `reuse_preconditioner=True` can reuse
+an AMG hierarchy for moderate coefficient changes, but is deliberately opt-in:
+it can increase iteration counts, and convergence/residual checks still apply.
 
 ## Available Solvers and Preconditioners
 
@@ -86,7 +112,8 @@ The fluid flow solver supports several linear system solvers and preconditioners
 | `cholesky` | Direct | - | scikit-sparse | CHOLMOD Cholesky decomposition. Slightly lower memory consumption for huge problems, but it is slow. |
 | `petsc-cg.gamg` | Iterative (CG) | GAMG | PETSc | CG with Geometric Algebraic Multigrid. Not very reliable in performance, 2-3 times slower than the fastest solver. |
 | `petsc-mumps` | Direct | - | PETSc/MUMPS | MUMPS direct solver via PETSc. For moderate problems, five times slower than the fastest solver. |
-| `petsc-cg.ilu` | Iterative (CG) | ILU | PETSc | CG with Incomplete LU factorization. The slowest. |
+| `petsc-gmres.ilu` | Iterative (GMRES) | ILU | PETSc | GMRES with Incomplete LU factorization. The legacy `petsc-cg.ilu` name is accepted as an alias. |
+| `scipy-spsolve` | Direct | - | SciPy | Portable sparse direct reference solver for small and diagnostic problems. |
 
 Relevant CPU times for a relatively small problem with $N\times N = 2000\times 2000$ grid points (relative tolerance for iterative solvers was set to 1e-8).
 
@@ -99,7 +126,7 @@ Relevant CPU times for a relatively small problem with $N\times N = 2000\times 2
 | scipy.amg-smooth_aggregation  | 15.48 |
 | cholesky                      | 20.61 |
 | petsc-mumps                   | 26.14 |
-| petsc-cg.ilu                  | 134.98 |
+| petsc-cg.ilu (legacy result)  | 134.98 |
 
 **Rules of thumb:** 
 - For fastest computation: use `pardiso` (consumes a lot of memory) or `petsc-cg.hypre` (the only difficulty is to install PETSc);
@@ -132,6 +159,9 @@ Performance of the code on a truncated rough surface is shown below. The peak me
 
 ![CPU and RAM performance of the solver](./docs/img/CPU_RAM_real_dof_performance.png)
 
+The correctness and compact-CSR measurements for version 0.1.0 are documented
+in [`docs/performance-0.1.0.md`](./docs/performance-0.1.0.md).
+
 
 ## Illustration
 
@@ -149,6 +179,3 @@ Another example for a grid $N\times N = 20\,000 \times 20\,000$. Simulation time
 + AI usage: Cursor & Copilot (different models), ChatGPT 4o, 5, Claude Sonnet 3.7, 4, 4.5
 + License: BSD 3-clause
 + Date: Sept-Nov 2025
-
-
-

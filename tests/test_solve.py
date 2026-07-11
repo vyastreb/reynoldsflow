@@ -9,6 +9,7 @@ License: BSD 3-Clause
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pytest
 from numpy.fft import ifft2, fftfreq, fftshift, ifftshift, fftn, ifftn
 import time
 
@@ -17,6 +18,8 @@ from reynoldsflow import transport as FS
 from rfgen import selfaffine_field
  # https://github.com/vyastreb/SelfAffineSurfaceGenerator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+pytestmark = [pytest.mark.slow, pytest.mark.backend]
 
 FS.setup_logging()  
 FS.set_verbosity('info')

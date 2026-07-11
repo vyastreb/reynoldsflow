@@ -9,11 +9,14 @@ License: BSD 3-Clause
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pytest
 
 from reynoldsflow import transport as FS
 from rfgen import selfaffine_field
  # https://github.com/vyastreb/SelfAffineSurfaceGenerator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+pytestmark = [pytest.mark.slow, pytest.mark.backend]
 
 FS.setup_logging()  
 # FS.set_verbosity('info')
@@ -23,7 +26,7 @@ PLOT_RESULTS = False
 def test_evolution():
     # Construct random self-affine surface
     N0 = 256           # Size of the random field
-    solver = "petsc"   # or "cholesky" or "scipy.amg.rs"
+    solver = "petsc"   # legacy alias for petsc-cg.hypre
     k_low =   4 / N0   # Lower cutoff of the power spectrum
     k_high = 32 / N0   # Upper cutoff of the power spectrum
     Hurst = 0.75         # Hurst exponent

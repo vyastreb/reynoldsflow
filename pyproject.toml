@@ -4,12 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reynoldsflow"
-version = "0.0.2"
+version = "0.1.0"
 requires-python = ">=3.10"
 description = "Efficient finite-difference solver for the Reynolds equation in thin fluid films"
 readme = "README.md"
-license = "BSD-3-Clause"
-license-files = ["LICENSE"]
+license = { text = "BSD-3-Clause" }
 authors = [
   { name = "Vladislav A. Yastrebov", email = "vladislav.yastrebov@minesparis.psl.eu" }
 ]
@@ -62,3 +61,10 @@ where = ["src"]
 minversion = "7.0"
 addopts = "-q"
 testpaths = ["tests"]
+markers = [
+  "unit: fast deterministic tests using base dependencies",
+  "integration: tests spanning multiple solver stages",
+  "backend: tests requiring one or more optional linear-solver backends",
+  "slow: large or repeated workloads excluded from the default test run",
+  "benchmark: performance measurements excluded from the default test run",
+]

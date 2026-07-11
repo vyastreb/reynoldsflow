@@ -9,7 +9,7 @@
 ### Basic Usage
 
 ```bash
-python test_solvers.py
+python -m pytest -q --run-slow --run-backend tests/test_solvers.py
 ```
 
 This will:
@@ -28,13 +28,13 @@ The test covers the following solver configurations:
 - **petsc-mumps**: PETSc with MUMPS direct solver
 
 #### Iterative Solvers (SciPy)
-- **scipy.amg.rs**: SciPy CG with Ruge-Stuben AMG preconditioner
-- **scipy.amg.smooth_aggregation**: SciPy CG with Smoothed Aggregation AMG preconditioner
+- **scipy.amg-rs**: SciPy CG with Ruge-Stuben AMG preconditioner
+- **scipy.amg-smooth_aggregation**: SciPy CG with Smoothed Aggregation AMG preconditioner
 
 #### Iterative Solvers (PETSc)
 - **petsc-cg.gamg**: PETSc CG with GAMG preconditioner
 - **petsc-cg.hypre**: PETSc CG with Hypre preconditioner
-- **petsc-cg.ilu**: PETSc CG with ILU preconditioner
+- **petsc-gmres.ilu**: PETSc GMRES with ILU preconditioner (`petsc-cg.ilu` is a legacy alias)
 
 ## Output
 
@@ -60,7 +60,7 @@ The `test_solvers.result` file contains:
 ```
 [PASS] cholesky                     | Time:   2.345s | Q_total: 1.234567e-03 | Conv.Error: 1.23e-08
 [FAIL] pardiso                      | Error: Module not found: pypardiso
-[PASS] scipy.amg.rs                 | Time:   5.678s | Q_total: 1.234567e-03 | Conv.Error: 2.34e-08
+[PASS] scipy.amg-rs                 | Time:   5.678s | Q_total: 1.234567e-03 | Conv.Error: 2.34e-08
 ```
 
 ## Requirements
@@ -73,7 +73,7 @@ The test requires all dependencies for the Transport Code, including:
 - pypardiso (for pardiso, optional)
 - petsc4py (for PETSc solvers, optional)
 - pyamg (for AMG preconditioners)
-- RandomField module
+- rfgen
 
 ## Exit Codes
 
@@ -97,3 +97,6 @@ k_high = 12.0 / N0 # Upper cutoff
 - The test uses a fixed random seed (23349) for reproducibility
 - Logging verbosity is set to 'warning' during tests to reduce output noise
 - Each solver is tested on the same gap field for fair comparison
+- Native backend smoke tests also run in isolated subprocesses via
+  `tests/integration/test_optional_backends.py`, preventing a broken MPI/MKL
+  runtime from aborting the main pytest process.
