@@ -1,5 +1,8 @@
 """Shared solver registry, fallback, and diagnostics tests."""
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
@@ -91,6 +94,37 @@ def test_unavailable_explicit_solver_is_explicit(monkeypatch):
 
     with pytest.raises(SolverUnavailableError, match="pypardiso"):
         solvers.solve_linear_system(matrix, rhs, solver="pardiso")
+
+
+def test_pardiso_spd_receives_only_upper_triangle(monkeypatch):
+    matrix, rhs = _small_spd_system()
+    calls = {}
+
+    class FakePardisoSolver:
+        def __init__(self, *, mtype):
+            calls["mtype"] = mtype
+
+        def solve(self, solve_matrix, solve_rhs):
+            calls["matrix"] = solve_matrix.copy()
+            return np.linalg.solve(matrix.toarray(), solve_rhs)
+
+        def free_memory(self, *, everything):
+            calls["freed"] = everything
+
+    monkeypatch.setattr(solvers, "_module_available", lambda name: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "pypardiso",
+        SimpleNamespace(PyPardisoSolver=FakePardisoSolver),
+    )
+
+    result = solvers.solve_linear_system(matrix, rhs, solver="pardiso")
+
+    assert calls["mtype"] == 2
+    assert calls["freed"] is True
+    assert calls["matrix"].format == "csr"
+    assert calls["matrix"][1, 0] == 0.0
+    assert_allclose(matrix @ result.solution, rhs)
 
 
 def test_public_solver_does_not_swallow_unknown_solver_error():

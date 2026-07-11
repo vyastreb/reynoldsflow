@@ -8,6 +8,7 @@ import logging
 import warnings
 
 import numpy as np
+from scipy.sparse import triu
 from scipy.sparse.linalg import LinearOperator, MatrixRankWarning, cg, spsolve
 
 from ._exceptions import (
@@ -226,14 +227,20 @@ def _solve_once(
         import pypardiso
 
         matrix_csr = matrix.tocsr()
-        pardiso = pypardiso.PyPardisoSolver()
-        pardiso.set_iparm(1, 1)
-        pardiso.set_iparm(24, 1)
-        pardiso.set_matrix_type(2)  # real symmetric positive definite
+        # MKL Pardiso's real-SPD mode consumes one triangle, not a complete
+        # symmetric matrix.  Supplying both triangles can crash inside MKL for
+        # larger systems instead of producing a catchable Python exception.
+        pardiso_matrix = triu(matrix_csr, format="csr")
+        pardiso = pypardiso.PyPardisoSolver(mtype=2)
         try:
-            solution = pardiso.solve(matrix_csr, rhs)
+            solution = pardiso.solve(pardiso_matrix, rhs)
         except Exception as exc:
             raise ConvergenceError(f"Pardiso failed: {exc}") from exc
+        finally:
+            try:
+                pardiso.free_memory(everything=True)
+            except Exception:
+                logger.debug("Pardiso workspace release failed.", exc_info=True)
         return _checked_result(
             matrix_csr, rhs, solution, solver, None, "direct solve"
         )
