@@ -19,7 +19,6 @@ BACKENDS = (
     ("pardiso", "pypardiso"),
     ("petsc-cg.hypre", "petsc4py"),
     ("petsc-cg.gamg", "petsc4py"),
-    ("petsc-gmres.ilu", "petsc4py"),
     ("petsc-mumps", "petsc4py"),
 )
 

@@ -219,7 +219,6 @@ def run_all_tests(N0=128, k_low=None, k_high=None):
         # PETSc iterative solver with different preconditioners
         ("petsc-cg", "gamg"),
         ("petsc-cg", "hypre"),
-        ("petsc-cg", "ilu"),
         
         # PETSc direct solver
         ("petsc-mumps", None),

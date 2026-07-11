@@ -75,7 +75,6 @@ def test_auto_never_implicitly_imports_petsc(monkeypatch):
         ("scipy.amg.rs", "scipy.amg-rs"),
         ("scipy.amg-sa", "scipy.amg-smooth_aggregation"),
         ("petsc", "petsc-cg.hypre"),
-        ("petsc-cg.ilu", "petsc-gmres.ilu"),
         ("none", "auto"),
     ],
 )
@@ -86,6 +85,12 @@ def test_legacy_solver_aliases(alias, canonical):
 def test_unknown_solver_is_explicit():
     with pytest.raises(UnknownSolverError, match="Unknown solver"):
         solvers.normalize_solver_name("definitely-not-a-solver")
+
+
+@pytest.mark.parametrize("name", ["petsc-cg.ilu", "petsc-gmres.ilu"])
+def test_removed_ilu_solvers_are_rejected(name):
+    with pytest.raises(UnknownSolverError, match="Unknown solver"):
+        solvers.normalize_solver_name(name)
 
 
 def test_unavailable_explicit_solver_is_explicit(monkeypatch):

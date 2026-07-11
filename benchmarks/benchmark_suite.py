@@ -22,7 +22,6 @@ DEFAULT_SOLVERS = (
     "pardiso",
     "petsc-cg.hypre",
     "petsc-cg.gamg",
-    "petsc-gmres.ilu",
     "petsc-mumps",
 )
 

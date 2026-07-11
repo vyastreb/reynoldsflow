@@ -41,7 +41,6 @@ _ALIASES = {
     "scipy.amg.sa": "scipy.amg-smooth_aggregation",
     "scipy.amg.smooth_aggregation": "scipy.amg-smooth_aggregation",
     "scipy.amg-sa": "scipy.amg-smooth_aggregation",
-    "petsc-cg.ilu": "petsc-gmres.ilu",
     "cholesky": "cholesky",
 }
 
@@ -53,7 +52,6 @@ _EXPLICIT_SOLVERS = {
     "cholesky",
     "petsc-cg.hypre",
     "petsc-cg.gamg",
-    "petsc-gmres.ilu",
     "petsc-mumps",
 }
 
@@ -245,14 +243,13 @@ def _solve_once(
             matrix_csr, rhs, solution, solver, None, "direct solve"
         )
 
-    if solver.startswith("petsc-cg.") or solver.startswith("petsc-gmres."):
+    if solver.startswith("petsc-cg."):
         if not _module_available("petsc4py"):
             raise SolverUnavailableError(
                 "PETSc requires petsc4py; install reynoldsflow[solvers]."
             )
         from petsc4py import PETSc
 
-        ksp_type = "gmres" if solver.startswith("petsc-gmres.") else "cg"
         preconditioner_name = solver.rsplit(".", maxsplit=1)[1]
         matrix_csr = matrix.tocsr()
         try:
@@ -262,12 +259,7 @@ def _solve_once(
             )
             ksp = PETSc.KSP().create()
             ksp.setOperators(petsc_matrix)
-            ksp.setType(ksp_type)
-            if ksp_type == "gmres":
-                try:
-                    ksp.setGMRESRestart(200)
-                except AttributeError:
-                    pass
+            ksp.setType("cg")
             pc = ksp.getPC()
             pc.setType(preconditioner_name)
             if preconditioner_name == "hypre":
