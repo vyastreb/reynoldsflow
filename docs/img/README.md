@@ -9,6 +9,6 @@ Illustrations of the flux of an incompressible fluid passing through a threshold
 
 + `illustration.jpg` -- simulation on a grid $8\,000\times 8\,000$ points (97 seconds on a laptop, 13th Gen Intel(R) Core(TM) i7-13700H).
 + `illustration_2.jpg` -- simulation on a grid $20\,000\times 20\,000$ points (17 minutes on a cluster node (sequential), Intel(R) Xeon(R) Platinum 8488C).
-+ `header.png` -- a similar kind of simulation.
-
-
++ `header.jpg` -- a similar kind of simulation.
++ `rough_contact_solver_scaling_v0.1.0.png` -- reproducible v0.1.0 steady
+  runtime and peak-RSS scaling on the deterministic rough-contact benchmark.

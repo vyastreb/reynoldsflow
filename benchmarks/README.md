@@ -70,17 +70,3 @@ python -m benchmarks.benchmark_solver \
 
 The suite reports unavailable backends, Python failures, timeouts, and native
 crashes independently while continuing with the remaining solvers.
-
-Repeated fixed-topology sequences can compare fresh assembly/preconditioning,
-prepared CSR topology, and prepared topology plus AMG hierarchy reuse:
-
-```bash
-python -m benchmarks.benchmark_evolution --size 256 --steps 5 --fresh
-python -m benchmarks.benchmark_evolution --size 256 --steps 5
-python -m benchmarks.benchmark_evolution \
-  --size 256 --steps 5 --reuse-preconditioner
-```
-
-Prepared problems require the open/closed mask to remain unchanged and raise an
-error when the topology changes. Reusing AMG is opt-in and every solve still
-checks convergence and the final residual.
