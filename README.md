@@ -18,7 +18,7 @@ components, assembles only active degrees of freedom, and reconstructs
 conservative face fluxes from the same conductances used by the linear system.
 
 The package is intended for rough-contact leakage calculations and related
-elliptic transport problems. Version 0.1.0 emphasizes numerical conservation,
+elliptic transport problems. Version 0.1.1 emphasizes numerical conservation,
 explicit convergence diagnostics, deterministic benchmarks, and safe optional
 solver selection.
 
@@ -146,7 +146,7 @@ the better route to large systems.
 
 Explicit native backends never silently fall back to another algorithm.
 
-## Reproducible v0.1.0 performance
+## Reproducible v0.1.1 performance
 
 The following figure replaces the legacy performance plots as the release
 baseline. It uses the deterministic `rough-contact` case at `256²`, `512²`,
@@ -158,7 +158,7 @@ or direct factorization, solution, and flux postprocessing. Peak RSS includes
 imports, native runtime state, JIT state, the gap field, matrix, solver data,
 and outputs.
 
-![Rough-contact solver runtime and memory scaling](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/rough_contact_solver_scaling_v0.1.0.png)
+![Rough-contact solver runtime and memory scaling](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/rough_contact_solver_scaling_v0.1.1.png)
 
 The `6144²` case contained 23,301,121 active DOFs and 116,378,457 matrix
 nonzeros. Five backends completed it:
@@ -196,7 +196,7 @@ not universal backend rankings.
 Commands and full stage definitions are documented in
 [`benchmarks/README.md`](https://github.com/vyastreb/reynoldsflow/blob/master/benchmarks/README.md).
 The compact-system and tolerance validation is summarized in
-[`docs/performance-0.1.0.md`](https://github.com/vyastreb/reynoldsflow/blob/master/docs/performance-0.1.0.md).
+[`docs/performance-0.1.1.md`](https://github.com/vyastreb/reynoldsflow/blob/master/docs/performance-0.1.1.md).
 
 ## Numerical validation
 
@@ -224,7 +224,7 @@ finite pressure, total flow, and boundary-flux conservation.
 ## Illustrations
 
 The following earlier large rough-contact simulations are retained as
-qualitative examples; they are not part of the v0.1.0 benchmark baseline.
+qualitative examples; they are not part of the v0.1.1 benchmark baseline.
 
 ![Rough-contact flow on an 8000 by 8000 grid](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/illustration.jpg)
 
@@ -251,5 +251,5 @@ the metadata in
 AI-assisted development is acknowledged for Cursor and GitHub Copilot;
 ChatGPT 4o and 5; Claude 3.7, 4, and 4.5; and OpenAI Codex (GPT-5). Codex
 assisted with the numerical audit, regression tests, benchmark methodology,
-documentation, and v0.1.0 release engineering. Scientific and numerical
+documentation, and 0.1-series release engineering. Scientific and numerical
 decisions and all generated code were reviewed by the author.

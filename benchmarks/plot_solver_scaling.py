@@ -143,7 +143,7 @@ def main() -> int:
     memory_axis.legend(loc="upper left", fontsize=8, ncol=1, framealpha=0.95)
 
     figure.suptitle(
-        "ReynoldsFlow v0.1.0 — deterministic rough-contact benchmark",
+        "ReynoldsFlow v0.1.1 — deterministic rough-contact benchmark",
         fontsize=12,
     )
     figure.text(

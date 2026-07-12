@@ -10,7 +10,7 @@ div(g^3 grad(p)) = 0
 
 on Cartesian and annular polar grids. `g <= 0` denotes solid/contact; positive `g` is an open fluid gap. The code first keeps a boundary-to-boundary percolating component, then assembles and solves a sparse linear system, reconstructs the pressure field, and computes `q = -g^3 grad(p)`.
 
-The package is early-stage scientific software (`reynoldsflow` 0.1.0, Python >=3.10). Optimize it carefully: numerical equivalence, connectivity, boundary conditions, flux conservation, and peak memory matter at least as much as wall time.
+The package is early-stage scientific software (`reynoldsflow` 0.1.1, Python >=3.10). Optimize it carefully: numerical equivalence, connectivity, boundary conditions, flux conservation, and peak memory matter at least as much as wall time.
 
 ## Canonical repository map
 

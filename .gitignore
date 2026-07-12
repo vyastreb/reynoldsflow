@@ -12,7 +12,7 @@ REF/
 *.npz
 *.png
 !extras/logo.png
-!docs/img/rough_contact_solver_scaling_v0.1.0.png
+!docs/img/rough_contact_solver_scaling_v0.1.1.png
 *.swp
 dev/
 docs/HELP.md

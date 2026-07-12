@@ -8,7 +8,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_public_version_and_exceptions():
-    assert reynoldsflow.__version__ == "0.1.0"
+    assert reynoldsflow.__version__ == "0.1.1"
     assert issubclass(reynoldsflow.InvalidGapError, ValueError)
     assert issubclass(reynoldsflow.UnknownSolverError, ValueError)
     assert issubclass(reynoldsflow.SolverUnavailableError, ImportError)

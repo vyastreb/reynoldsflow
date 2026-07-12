@@ -1,10 +1,10 @@
-# ReynoldsFlow 0.1.0 numerical and performance report
+# ReynoldsFlow 0.1.1 numerical and performance report
 
 Date: 2026-07-12
 
 This report defines the reproducible release baseline. Historical benchmark
 tables and figures remain in the repository for provenance but are not used to
-assess version 0.1.0.
+assess version 0.1.1.
 
 ## Benchmark environment
 
@@ -36,10 +36,10 @@ Peak RSS is the process high-water mark and includes imports, native/JIT state,
 input/output arrays, sparse matrices, preconditioners or factors, and all
 completed stages.
 
-![Rough-contact runtime and memory scaling](img/rough_contact_solver_scaling_v0.1.0.png)
+![Rough-contact runtime and memory scaling](img/rough_contact_solver_scaling_v0.1.1.png)
 
 The exact plotted data are stored in
-[`benchmarks/results/rough-contact-scaling-v0.1.0.csv`](../benchmarks/results/rough-contact-scaling-v0.1.0.csv).
+[`benchmarks/results/rough-contact-scaling-v0.1.1.csv`](../benchmarks/results/rough-contact-scaling-v0.1.1.csv).
 
 Successful curves terminate at the last measured point. Failed attempts are
 reported below but are not converted into timing or memory points.
@@ -145,8 +145,8 @@ python -m benchmarks.benchmark_suite \
 
 python -m benchmarks.plot_solver_scaling \
   benchmarks/results/rough-contact-{256,512,1024,2048,4096,5120,6144}.json \
-  --output docs/img/rough_contact_solver_scaling_v0.1.0.png \
-  --csv-output benchmarks/results/rough-contact-scaling-v0.1.0.csv
+  --output docs/img/rough_contact_solver_scaling_v0.1.1.png \
+  --csv-output benchmarks/results/rough-contact-scaling-v0.1.1.csv
 ```
 
 Raw subprocess reports are ignored because they contain bulky repeated data;
