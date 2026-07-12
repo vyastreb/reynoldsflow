@@ -1,6 +1,6 @@
 # ReynoldsFlow 0.1.0 numerical and performance report
 
-Date: 2026-07-11
+Date: 2026-07-12
 
 This report defines the reproducible release baseline. Historical benchmark
 tables and figures remain in the repository for provenance but are not used to
@@ -22,9 +22,12 @@ assess version 0.1.0.
 ## Method
 
 The deterministic Cartesian `rough-contact` case was run at `256²`, `512²`,
-`1024²`, `2048²`, and `4096²` with seed 23349, compact active-DOF assembly,
-and `rtol=1e-12`. Every backend ran in a separate subprocess. Each process
-made one cold run followed by two steady runs.
+`1024²`, `2048²`, `4096²`, `5120²`, and `6144²` with seed 23349, compact
+active-DOF assembly, and `rtol=1e-12`. All eight backends were tested through
+`4096²`. SuperLU was excluded from larger attempts after consuming 23.10 GiB
+at `4096²`; the other seven were run at `5120²` and attempted at `6144²`.
+Every backend ran in a separate subprocess. Each successful process made one
+cold run followed by two steady runs.
 
 Reported runtime is the median steady end-to-end wall time: connectivity,
 assembly, sparse-format conversion, solver setup/factorization, linear solve,
@@ -38,31 +41,54 @@ completed stages.
 The exact plotted data are stored in
 [`benchmarks/results/rough-contact-scaling-v0.1.0.csv`](../benchmarks/results/rough-contact-scaling-v0.1.0.csv).
 
-## Largest release case
+Successful curves terminate at the last measured point. Failed attempts are
+reported below but are not converted into timing or memory points.
 
-The `4096²` case retained 10,722,930 active DOFs (63.9% of the grid) and
-53,531,200 matrix nonzeros.
+## Largest successful case
+
+The `6144²` case retained 23,301,121 active DOFs (61.7% of the grid) and
+116,378,457 matrix nonzeros. Five backends completed the full three-run
+protocol.
 
 | Solver | Steady total (s) | Linear stage (s) | Peak RSS (GiB) | Iterations |
 |---|---:|---:|---:|---:|
-| `petsc-cg.hypre` | 24.13 | 22.59 | 7.42 | 16 |
-| `cholesky` | 30.28 | 28.71 | 7.53 | direct |
-| `pardiso` | 31.71 | 30.13 | 9.64 | direct |
-| `scipy.amg-smooth_aggregation` | 63.01 | 61.43 | 7.02 | 38 |
-| `petsc-mumps` | 71.32 | 69.79 | 12.13 | direct |
-| `petsc-cg.gamg` | 74.46 | 72.92 | 6.27 | 109 |
-| `scipy-spsolve` | 153.50 | 151.89 | 23.10 | direct |
-| `scipy.amg-rs` | 224.59 | 223.01 | 5.95 | 50 |
+| `petsc-cg.hypre` | 52.18 | 48.70 | 15.85 | 16 |
+| `pardiso` | 72.40 | 68.93 | 21.22 | direct |
+| `scipy.amg-smooth_aggregation` | 111.90 | 108.42 | 15.05 | 26 |
+| `cholesky` | 153.52 | 150.02 | 14.36 | direct |
+| `petsc-cg.gamg` | 214.16 | 210.78 | 13.40 | 156 |
 
-All backends completed and passed the true algebraic residual check. On the
-largest case, the maximum true relative residual was `7.70e-13` and the
-maximum boundary-flux conservation error was `4.81e-10`. Across the full
-five-size sweep, the corresponding maxima were `8.54e-13` and `7.72e-8`.
+All successful backends passed the true algebraic residual check. On the
+largest case, the maximum true relative residual was `9.16e-13` and the
+maximum boundary-flux conservation error was `1.25e-9`. Across every
+successful point in the seven-size sweep, the corresponding maxima were
+`9.16e-13` and `7.72e-8`.
+
+## Solver capacity on the 32 GiB host
+
+| Solver | Largest success | Active DOFs | Steady total (s) | Peak RSS (GiB) | Next attempted limit |
+|---|---:|---:|---:|---:|---|
+| `scipy-spsolve` | `4096²` | 10,722,930 | 153.50 | 23.10 | `5120²` not attempted; approximately 38 GiB projected |
+| `scipy.amg-rs` | `5120²` | 14,725,073 | 531.47 | 8.26 | `6144²` exceeded 5400 s process timeout |
+| `scipy.amg-smooth_aggregation` | `6144²` | 23,301,121 | 111.90 | 15.05 | completed |
+| `cholesky` | `6144²` | 23,301,121 | 153.52 | 14.36 | completed |
+| `pardiso` | `6144²` | 23,301,121 | 72.40 | 21.22 | completed |
+| `petsc-cg.hypre` | `6144²` | 23,301,121 | 52.18 | 15.85 | completed |
+| `petsc-cg.gamg` | `6144²` | 23,301,121 | 214.16 | 13.40 | completed |
+| `petsc-mumps` | `5120²` | 14,725,073 | 101.26 | 16.77 | `6144²` exited with `SIGKILL` after 203 s |
+
+The MUMPS worker produced no result at `6144²`. Its `SIGKILL` under the
+highest factor-memory workload is consistent with an operating-system memory
+termination, but no successful worker RSS was available to record. The
+Ruge–Stuben worker was terminated by the suite's explicit timeout. These are
+resource-capacity outcomes, not failed residual checks.
 
 These results are specific to this matrix family and binary environment.
-Direct solvers are competitive at this scale, but their factor fill is
-superlinear. Hypre is the preferred PETSc configuration for larger systems;
-PyAMG remains the portable base-dependency path.
+Direct solvers remain competitive where their factors fit, but fill sets a
+hard capacity limit. Hypre is the strongest large-case configuration on this
+host. Smoothed aggregation is the practical portable PyAMG choice at these
+sizes; classical Ruge–Stuben remained memory-efficient but became
+runtime-limited.
 
 ## Correctness changes relative to the pre-0.1 code
 
@@ -103,8 +129,22 @@ for n in 256 512 1024 2048 4096; do
     --output "benchmarks/results/rough-contact-${n}.json"
 done
 
+python -m benchmarks.benchmark_suite \
+  --case rough-contact --size 5120 --rtol 1e-12 \
+  --repeat 3 --threads 1 --timeout 3600 \
+  --solvers cholesky pardiso petsc-mumps petsc-cg.hypre petsc-cg.gamg \
+    scipy.amg-smooth_aggregation scipy.amg-rs \
+  --output benchmarks/results/rough-contact-5120.json
+
+python -m benchmarks.benchmark_suite \
+  --case rough-contact --size 6144 --rtol 1e-12 \
+  --repeat 3 --threads 1 --timeout 5400 \
+  --solvers petsc-mumps pardiso cholesky petsc-cg.hypre petsc-cg.gamg \
+    scipy.amg-smooth_aggregation scipy.amg-rs \
+  --output benchmarks/results/rough-contact-6144.json
+
 python -m benchmarks.plot_solver_scaling \
-  benchmarks/results/rough-contact-{256,512,1024,2048,4096}.json \
+  benchmarks/results/rough-contact-{256,512,1024,2048,4096,5120,6144}.json \
   --output docs/img/rough_contact_solver_scaling_v0.1.0.png \
   --csv-output benchmarks/results/rough-contact-scaling-v0.1.0.csv
 ```

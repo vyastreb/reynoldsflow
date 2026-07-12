@@ -134,15 +134,15 @@ the better route to large systems.
 
 | Solver string | Method and preconditioner | Dependency | Advantages | Limitations / best use |
 |---|---|---|---|---|
-| `auto` | CG + Ruge–Stuben AMG | SciPy, PyAMG | Portable and safe default; no native optional stack | Same implementation as `scipy.amg-rs`; not always the fastest |
-| `scipy.amg-rs` | CG + Ruge–Stuben AMG | SciPy, PyAMG | Low memory; portable; explicit iterations and residual | Can require many iterations for strongly varying rough gaps |
+| `auto` | CG + Ruge–Stuben AMG | SciPy, PyAMG | Portable and safe default; no native optional stack | Same implementation as `scipy.amg-rs`; slow on the largest rough-contact cases |
+| `scipy.amg-rs` | CG + Ruge–Stuben AMG | SciPy, PyAMG | Low memory; portable; explicit iterations and residual | Reached 531 s at `5120²` and exceeded the `6144²` timeout |
 | `scipy.amg-smooth_aggregation` | CG + smoothed-aggregation AMG | SciPy, PyAMG | Portable alternative; competitive on the largest release case | More hierarchy memory; performance is problem-dependent |
-| `scipy-spsolve` | Sparse LU (SuperLU) | SciPy | Robust direct reference available in the base install | Superlinear fill and memory; intended for small/moderate diagnostics |
+| `scipy-spsolve` | Sparse LU (SuperLU) | SciPy | Robust direct reference available in the base install | Used 23.1 GiB at `4096²`; intended for small/moderate diagnostics |
 | `cholesky` | Sparse Cholesky (CHOLMOD) | scikit-sparse, SuiteSparse | Very fast direct reference for the SPD operator | Native install; fill growth; performance depends strongly on BLAS |
 | `pardiso` | Sparse Cholesky (oneMKL Pardiso) | pypardiso, oneMKL | Accurate direct solve; tunable shared-memory parallelism | Native runtime; thread-sensitive; factor memory grows rapidly |
 | `petsc-cg.hypre` | CG + Hypre BoomerAMG | PETSc, Hypre | Few iterations; strongest large-scale option in current tests | PETSc/MPI installation and cold initialization cost |
 | `petsc-cg.gamg` | CG + PETSc GAMG | PETSc | PETSc-native algebraic multigrid | Iteration count and setup are more problem-dependent than Hypre |
-| `petsc-mumps` | Multifrontal direct solve | PETSc, MUMPS | Accurate direct reference inside PETSc | High factor memory; sensitive to MPI and BLAS configuration |
+| `petsc-mumps` | Multifrontal direct solve | PETSc, MUMPS | Accurate direct reference inside PETSc | Used 16.8 GiB at `5120²`; `6144²` was killed under memory pressure |
 
 Explicit native backends never silently fall back to another algorithm.
 
@@ -150,27 +150,32 @@ Explicit native backends never silently fall back to another algorithm.
 
 The following figure replaces the legacy performance plots as the release
 baseline. It uses the deterministic `rough-contact` case at `256²`, `512²`,
-`1024²`, `2048²`, and `4096²`; compact active-DOF systems; `rtol=1e-12`; and
-one native thread. Each solver ran in an isolated process. Runtime is the
-median of two steady end-to-end runs after one cold run. Peak RSS includes
+`1024²`, `2048²`, `4096²`, `5120²`, and `6144²`; compact active-DOF systems;
+`rtol=1e-12`; and one native thread. Every solver ran in an isolated process.
+Runtime is the median of two fresh-solver, steady-process, end-to-end runs
+after one cold run. It includes matrix assembly, preconditioner construction
+or direct factorization, solution, and flux postprocessing. Peak RSS includes
 imports, native runtime state, JIT state, the gap field, matrix, solver data,
 and outputs.
 
 ![Rough-contact solver runtime and memory scaling](https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/docs/img/rough_contact_solver_scaling_v0.1.0.png)
 
-The largest case contained 10,722,930 active DOFs and 53,531,200 matrix
-nonzeros:
+The `6144²` case contained 23,301,121 active DOFs and 116,378,457 matrix
+nonzeros. Five backends completed it:
 
 | Solver | Steady end-to-end time (s) | Peak RSS (GiB) | Iterations |
 |---|---:|---:|---:|
-| `petsc-cg.hypre` | 24.13 | 7.42 | 16 |
-| `cholesky` | 30.28 | 7.53 | direct |
-| `pardiso` | 31.71 | 9.64 | direct |
-| `scipy.amg-smooth_aggregation` | 63.01 | 7.02 | 38 |
-| `petsc-mumps` | 71.32 | 12.13 | direct |
-| `petsc-cg.gamg` | 74.46 | 6.27 | 109 |
-| `scipy-spsolve` | 153.50 | 23.10 | direct |
-| `scipy.amg-rs` | 224.59 | 5.95 | 50 |
+| `petsc-cg.hypre` | 52.18 | 15.85 | 16 |
+| `pardiso` | 72.40 | 21.22 | direct |
+| `scipy.amg-smooth_aggregation` | 111.90 | 15.05 | 26 |
+| `cholesky` | 153.52 | 14.36 | direct |
+| `petsc-cg.gamg` | 214.16 | 13.40 | 156 |
+
+Curves stop at each backend's largest successful size. SuperLU stopped at
+`4096²` (23.10 GiB; `5120²` was projected above available RAM). MUMPS passed
+`5120²` (101.26 s, 16.77 GiB) but received `SIGKILL` at `6144²`. Ruge–Stuben
+passed `5120²` (531.47 s, 8.26 GiB) but exceeded the 5400 s process timeout at
+`6144²`. Failed or unattempted points are not plotted as timings.
 
 These values describe one matrix family and one binary environment; they are
 not universal backend rankings.

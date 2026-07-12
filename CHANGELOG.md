@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — 2026-07-11
+## 0.1.0 — 2026-07-12
 
 ### Numerical correctness
 
@@ -27,8 +27,8 @@
 - Added machine, BLAS, native thread, backend-version, residual, iteration,
   conservation, and peak-RSS metadata to benchmark reports.
 - Added the reproducible v0.1.0 rough-contact CPU/RAM scaling dataset through
-  `4096 x 4096` grid points (10.7 million active DOFs) and its generated
-  figure.
+  `6144 x 6144` grid points (23.3 million active DOFs), including explicit
+  memory- and runtime-limited solver endpoints, and its generated figure.
 
 ### Solvers and API
 
