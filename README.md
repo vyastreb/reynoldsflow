@@ -18,9 +18,10 @@ components, assembles only active degrees of freedom, and reconstructs
 conservative face fluxes from the same conductances used by the linear system.
 
 The package is intended for rough-contact leakage calculations and related
-elliptic transport problems. Version 0.1.1 emphasizes numerical conservation,
-explicit convergence diagnostics, deterministic benchmarks, and safe optional
-solver selection.
+elliptic transport problems. Version 0.1.2 adds fully periodic Cartesian
+pressure-gradient driving and compatibility with both scikit-sparse 0.4 and
+0.5 while retaining the numerical conservation and solver diagnostics of the
+0.1 series.
 
 ## Mathematical model
 
@@ -67,10 +68,39 @@ Optional native backends can be installed separately:
 
 ```bash
 pip install "reynoldsflow[pardiso]"   # pypardiso / oneMKL
-pip install "reynoldsflow[cholesky]" # scikit-sparse / CHOLMOD
+pip install "reynoldsflow[cholesky]"  # scikit-sparse / CHOLMOD
 pip install "reynoldsflow[petsc]"    # petsc4py binding
 pip install "reynoldsflow[solvers]"  # request every optional Python binding
 ```
+
+The Cholesky extra depends on `scikit-sparse`, which wraps the native
+SuiteSparse/CHOLMOD library. If no compatible `scikit-sparse` wheel is
+available, pip attempts a source build and requires the SuiteSparse development
+headers and libraries to be installed first. In a Conda environment, the
+recommended installation is:
+
+```bash
+conda install -c conda-forge scikit-sparse
+pip install "reynoldsflow[cholesky]"
+```
+
+For a pip-based installation on Debian or Ubuntu, install
+`libsuitesparse-dev` before running `pip install "reynoldsflow[cholesky]"`.
+On HPC systems, load the local SuiteSparse module or provide
+`SUITESPARSE_INCLUDE_DIR` and `SUITESPARSE_LIB_DIR` to the build.
+
+PETSc is also most reliable when its native stack and Python binding come from
+the same package manager. A tested Conda installation sequence is:
+
+```bash
+conda install -c conda-forge petsc petsc4py
+pip install "reynoldsflow[petsc]"
+```
+
+The selected PETSc build must include Hypre for `petsc-cg.hypre` and MUMPS for
+`petsc-mumps`; the standard conda-forge Linux build includes both. Keep PETSc
+in a separate environment if another installed backend brings an incompatible
+MPI runtime.
 
 PETSc, MUMPS, Hypre, SuiteSparse, and oneMKL are native libraries. The PETSc
 installation itself must have been built with the requested Hypre or MUMPS

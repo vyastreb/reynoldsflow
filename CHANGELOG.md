@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.2 — 2026-07-12
+
+### Periodic Cartesian flow
+
+- Added a fully periodic Cartesian representative-cell mode driven by a
+  prescribed macroscopic pressure gradient.
+- Added winding-aware periodic connectivity, component-wise pressure gauges,
+  conservative periodic face fluxes, and prepared-topology support.
+- Retained non-winding fluid pockets with zero physical flux while preserving
+  the normal no-percolation result when no component winds in the transport
+  direction.
+
+### Solvers and installation
+
+- Added compatibility with both the scikit-sparse 0.4
+  `cholesky(...).solve_A(...)` API and the scikit-sparse 0.5
+  `cho_factor(...).solve(...)` API.
+- Documented tested Conda-first installation sequences for SuiteSparse/CHOLMOD
+  and PETSc native stacks.
+- Verified all eight solver modes on small conservative Cartesian problems,
+  including clean Python 3.12 environments for the base, CHOLMOD/Pardiso, and
+  PETSc/Hypre/GAMG/MUMPS installation paths.
+
+### Tests
+
+- Added deterministic periodic-gradient regressions for uniform and
+  heterogeneous gaps, disconnected pockets, winding detection, conservation,
+  symmetry, prepared solves, and input validation.
+- Added mocked compatibility coverage for both supported scikit-sparse APIs.
+
 ## 0.1.1 — 2026-07-12
 
 ### Performance and documentation

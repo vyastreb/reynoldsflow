@@ -8,6 +8,6 @@ authors:
     affiliation: "CNRS, Mines Paris - PSL, Centre des Matériaux"
 repository-code: "https://github.com/vyastreb/reynoldsflow"
 url: "https://pypi.org/project/reynoldsflow/"
-version: 0.1.1
+version: 0.1.2
 date-released: 2026-07-12
 license: BSD-3-Clause

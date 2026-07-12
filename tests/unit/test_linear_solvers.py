@@ -132,6 +132,44 @@ def test_pardiso_spd_receives_only_upper_triangle(monkeypatch):
     assert_allclose(matrix @ result.solution, rhs)
 
 
+@pytest.mark.parametrize("api_version", ["0.4", "0.5"])
+def test_cholesky_supports_old_and_new_scikit_sparse_apis(
+    monkeypatch, api_version
+):
+    matrix, rhs = _small_spd_system()
+    calls = []
+
+    class OldFactor:
+        def solve_A(self, solve_rhs):
+            calls.append("solve_A")
+            return np.linalg.solve(matrix.toarray(), solve_rhs)
+
+    class NewFactor:
+        def solve(self, solve_rhs):
+            calls.append("solve")
+            return np.linalg.solve(matrix.toarray(), solve_rhs)
+
+    if api_version == "0.5":
+        cholmod = SimpleNamespace(
+            cho_factor=lambda _: NewFactor(),
+            cholesky=lambda _: pytest.fail("0.5 must use cho_factor"),
+        )
+        expected_call = "solve"
+    else:
+        cholmod = SimpleNamespace(cholesky=lambda _: OldFactor())
+        expected_call = "solve_A"
+
+    monkeypatch.setattr(solvers, "_module_available", lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "sksparse", SimpleNamespace(cholmod=cholmod)
+    )
+
+    result = solvers.solve_linear_system(matrix, rhs, solver="cholesky")
+
+    assert calls == [expected_call]
+    assert_allclose(matrix @ result.solution, rhs)
+
+
 def test_public_solver_does_not_swallow_unknown_solver_error():
     gaps = np.ones((6, 6), dtype=np.float64)
 

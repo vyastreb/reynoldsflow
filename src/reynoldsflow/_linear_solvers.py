@@ -206,11 +206,17 @@ def _solve_once(
             raise SolverUnavailableError(
                 "CHOLMOD requires scikit-sparse; install reynoldsflow[solvers]."
             )
-        from sksparse.cholmod import cholesky
+        from sksparse import cholmod
 
         matrix_csc = matrix.tocsc()
         try:
-            solution = cholesky(matrix_csc).solve_A(rhs)
+            if hasattr(cholmod, "cho_factor"):
+                # scikit-sparse >= 0.5: cholesky() returns factor matrices,
+                # while cho_factor() returns the reusable solver object.
+                solution = cholmod.cho_factor(matrix_csc).solve(rhs)
+            else:
+                # scikit-sparse 0.4.x compatibility.
+                solution = cholmod.cholesky(matrix_csc).solve_A(rhs)
         except Exception as exc:
             raise ConvergenceError(f"CHOLMOD failed: {exc}") from exc
         return _checked_result(
