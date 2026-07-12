@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/extras/logo.png" alt="ReynoldsFlow logo" width="560">
+  <img src="https://raw.githubusercontent.com/vyastreb/reynoldsflow/master/extras/logo.png" alt="ReynoldsFlow logo" width="300">
 </p>
 
 # ReynoldsFlow
