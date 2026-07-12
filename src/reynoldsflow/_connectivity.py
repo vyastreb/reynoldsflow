@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+from numba import njit
 from skimage.measure import label
 
 
@@ -93,3 +94,77 @@ def find_spanning_mask(
     keep_root[spanning_roots] = True
     np.take(roots, labels, out=labels)
     return keep_root[labels]
+
+
+@njit
+def _label_periodic_components_numba(open_mask: np.ndarray):
+    """Label 4-connected components on a 2D torus and detect x winding."""
+    n_x, n_y = open_mask.shape
+    size = n_x * n_y
+    labels = np.zeros((n_x, n_y), dtype=np.int32)
+    lifted_x = np.zeros(size, dtype=np.int64)
+    stack = np.empty(size, dtype=np.int64)
+    winding = np.zeros(size + 1, dtype=np.bool_)
+    component = 0
+
+    for start_i in range(n_x):
+        for start_j in range(n_y):
+            if not open_mask[start_i, start_j] or labels[start_i, start_j] != 0:
+                continue
+            component += 1
+            start = start_i * n_y + start_j
+            labels[start_i, start_j] = component
+            lifted_x[start] = 0
+            stack_size = 1
+            stack[0] = start
+
+            while stack_size:
+                stack_size -= 1
+                grid_index = int(stack[stack_size])
+                i = grid_index // n_y
+                j = grid_index - i * n_y
+                current_x = lifted_x[grid_index]
+
+                for direction in range(4):
+                    neighbor_i = i
+                    neighbor_j = j
+                    x_step = 0
+                    if direction == 0:
+                        neighbor_i = (i - 1) % n_x
+                        x_step = -1
+                    elif direction == 1:
+                        neighbor_i = (i + 1) % n_x
+                        x_step = 1
+                    elif direction == 2:
+                        neighbor_j = (j - 1) % n_y
+                    else:
+                        neighbor_j = (j + 1) % n_y
+
+                    if not open_mask[neighbor_i, neighbor_j]:
+                        continue
+                    neighbor_index = neighbor_i * n_y + neighbor_j
+                    candidate_x = current_x + x_step
+                    if labels[neighbor_i, neighbor_j] == 0:
+                        labels[neighbor_i, neighbor_j] = component
+                        lifted_x[neighbor_index] = candidate_x
+                        stack[stack_size] = neighbor_index
+                        stack_size += 1
+                    elif (
+                        labels[neighbor_i, neighbor_j] == component
+                        and lifted_x[neighbor_index] != candidate_x
+                    ):
+                        winding[component] = True
+
+    return labels, winding[: component + 1]
+
+
+def label_periodic_components(gaps: np.ndarray):
+    """Return toroidal component labels and x-winding flags.
+
+    ``winding[label]`` is true when that component contains a closed path
+    whose lifted x coordinate changes by a nonzero multiple of the cell size.
+    """
+    gaps = np.asarray(gaps)
+    if gaps.ndim != 2:
+        raise ValueError("Connectivity analysis requires a 2D gap array.")
+    return _label_periodic_components_numba(gaps > 0.0)

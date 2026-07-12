@@ -16,7 +16,7 @@ from numba import jit, njit
 import time
 import logging
 
-from ._connectivity import find_spanning_mask
+from ._connectivity import find_spanning_mask, label_periodic_components
 from ._active_dofs import build_active_mapping, reconstruct_full_solution
 from ._linear_solvers import (
     DEFAULT_RTOL,
@@ -353,6 +353,128 @@ def _create_solver_matrix(g, p_west=0.0, p_east=1.0):
         g, p_west=p_west, p_east=p_east
     )
 
+
+@njit
+def _count_periodic_matrix_entries(n, g, grid_to_dof, dof_to_grid):
+    counts = np.empty(dof_to_grid.size, dtype=np.int32)
+    for row in range(dof_to_grid.size):
+        grid_index = int(dof_to_grid[row])
+        i = grid_index // n
+        j = grid_index - i * n
+        count = 1
+        for neighbor_index in (
+            ((i - 1) % n) * n + j,
+            ((i + 1) % n) * n + j,
+            i * n + (j - 1) % n,
+            i * n + (j + 1) % n,
+        ):
+            if grid_to_dof[neighbor_index] >= 0:
+                count += 1
+        counts[row] = count
+    return counts
+
+
+@njit
+def _fill_periodic_matrix_csr_into(
+    n,
+    g,
+    grid_to_dof,
+    dof_to_grid,
+    indptr,
+    indices,
+    data,
+    rhs,
+    pressure_gradient,
+):
+    dx = 1.0 / n
+    for row in range(dof_to_grid.size):
+        grid_index = int(dof_to_grid[row])
+        i = grid_index // n
+        j = grid_index - i * n
+        cursor = int(indptr[row])
+        diag = 0.0
+        k_west = 0.0
+        k_east = 0.0
+
+        neighbor_coordinates = (
+            ((i - 1) % n, j),
+            ((i + 1) % n, j),
+            (i, (j - 1) % n),
+            (i, (j + 1) % n),
+        )
+        for direction in range(4):
+            neighbor_i, neighbor_j = neighbor_coordinates[direction]
+            coefficient = face_k(g[i, j], g[neighbor_i, neighbor_j])
+            if coefficient <= 0.0:
+                continue
+            diag += coefficient
+            if direction == 0:
+                k_west = coefficient
+            elif direction == 1:
+                k_east = coefficient
+            neighbor = int(grid_to_dof[neighbor_i * n + neighbor_j])
+            if neighbor >= 0:
+                indices[cursor] = neighbor
+                data[cursor] = -coefficient
+                cursor += 1
+
+        indices[cursor] = row
+        data[cursor] = diag
+        rhs[row] = pressure_gradient * dx * (k_west - k_east)
+
+
+def _periodic_topology(g):
+    labels, winding = label_periodic_components(g)
+    if not np.any(winding):
+        return None
+    component_count = winding.size - 1
+    anchors = np.full(component_count + 1, -1, dtype=np.int64)
+    flat_labels = labels.ravel()
+    components, first_indices = np.unique(flat_labels, return_index=True)
+    anchors[components] = first_indices
+    free_mask = (flat_labels > 0)
+    free_mask[anchors[1:]] = False
+    free_gaps = np.where(free_mask.reshape(g.shape), g, 0.0)
+    grid_to_dof, dof_to_grid = build_active_mapping(free_gaps)
+    return labels, grid_to_dof, dof_to_grid
+
+
+def _periodic_structure(g, grid_to_dof, dof_to_grid):
+    n = g.shape[0]
+    counts = _count_periodic_matrix_entries(
+        n, g, grid_to_dof, dof_to_grid
+    )
+    indptr = indptr_from_counts(counts)
+    indices = np.empty(int(indptr[-1]), dtype=np.int32)
+    data = np.empty(int(indptr[-1]), dtype=np.float64)
+    rhs = np.zeros(dof_to_grid.size, dtype=np.float64)
+    _fill_periodic_matrix_csr_into(
+        n,
+        g,
+        grid_to_dof,
+        dof_to_grid,
+        indptr,
+        indices,
+        data,
+        rhs,
+        0.0,
+    )
+    return indptr, indices
+
+
+def _reconstruct_periodic_pressure(shape, solution, dof_to_grid, labels):
+    pressure = reconstruct_full_solution(shape, solution, dof_to_grid)
+    component_count = int(labels.max())
+    counts = np.bincount(labels.ravel(), minlength=component_count + 1)
+    sums = np.bincount(
+        labels.ravel(), weights=pressure.ravel(), minlength=component_count + 1
+    )
+    means = np.zeros(component_count + 1, dtype=np.float64)
+    means[1:] = sums[1:] / counts[1:]
+    open_mask = labels > 0
+    pressure[open_mask] -= means[labels[open_mask]]
+    return pressure
+
 @jit(nopython=True)
 def _threshold_numba(matrix, z0):
     """Numba-accelerated threshold function"""
@@ -437,6 +559,82 @@ def _cell_flux_from_faces_numba(gaps, flux_x, flux_y):
 
     return flux
 
+
+@njit
+def _calculate_periodic_face_fluxes_numba(
+    gaps, pressure, pressure_gradient
+):
+    """Return conservative faces for ``p = -G*x + pressure``."""
+    n = gaps.shape[0]
+    dx = 1.0 / n
+    dy = 1.0 / n
+    flux_x = np.zeros((n + 1, n), dtype=np.float64)
+    flux_y = np.zeros((n, n), dtype=np.float64)
+
+    for i in range(n):
+        i_minus = (i - 1) % n
+        for j in range(n):
+            conductivity = face_k(gaps[i_minus, j], gaps[i, j])
+            if conductivity > 0.0:
+                flux_x[i, j] = conductivity * (
+                    pressure_gradient
+                    - (pressure[i, j] - pressure[i_minus, j]) / dx
+                )
+    flux_x[n, :] = flux_x[0, :]
+
+    for i in range(n):
+        for j in range(n):
+            j_plus = (j + 1) % n
+            conductivity = face_k(gaps[i, j], gaps[i, j_plus])
+            if conductivity > 0.0:
+                flux_y[i, j] = -conductivity * (
+                    pressure[i, j_plus] - pressure[i, j]
+                ) / dy
+    return flux_x, flux_y
+
+
+@njit
+def _cell_flux_from_periodic_faces_numba(gaps, flux_x, flux_y):
+    n = gaps.shape[0]
+    flux = np.zeros((n, n, 2), dtype=np.float64)
+    for i in range(n):
+        for j in range(n):
+            if gaps[i, j] <= 0.0:
+                continue
+            flux[i, j, 0] = 0.5 * (flux_x[i, j] + flux_x[i + 1, j])
+            flux[i, j, 1] = 0.5 * (
+                flux_y[i, (j - 1) % n] + flux_y[i, j]
+            )
+    return flux
+
+
+def _normalize_boundary_mode(boundary_mode):
+    if not isinstance(boundary_mode, str):
+        raise ValueError("boundary_mode must be 'pressure' or 'periodic'.")
+    normalized = boundary_mode.strip().lower()
+    if normalized not in {"pressure", "periodic"}:
+        raise ValueError("boundary_mode must be 'pressure' or 'periodic'.")
+    return normalized
+
+
+def _validate_cartesian_boundary_parameters(
+    boundary_mode, pressure_gradient, p_west, p_east
+):
+    boundary_mode = _normalize_boundary_mode(boundary_mode)
+    if not np.isfinite(pressure_gradient):
+        raise ValueError("Pressure gradient must be finite.")
+    if not np.isfinite(p_west) or not np.isfinite(p_east):
+        raise ValueError("Reservoir pressures must be finite.")
+    if boundary_mode == "periodic" and (p_west != 0.0 or p_east != 1.0):
+        raise ValueError(
+            "p_west and p_east are unavailable when boundary_mode='periodic'."
+        )
+    if boundary_mode == "pressure" and pressure_gradient != 1.0:
+        raise ValueError(
+            "pressure_gradient is only available when boundary_mode='periodic'."
+        )
+    return boundary_mode
+
 def solve_diffusion(
     n,
     g,
@@ -509,6 +707,9 @@ class PreparedCartesianProblem:
     indices: np.ndarray
     p_west: float
     p_east: float
+    boundary_mode: str = "pressure"
+    pressure_gradient: float = 1.0
+    component_labels: np.ndarray | None = None
     _amg_preconditioner: object = field(default=None, init=False, repr=False)
     _amg_method: str | None = field(default=None, init=False, repr=False)
 
@@ -534,18 +735,31 @@ class PreparedCartesianProblem:
         values = self._filtered_values(gaps)
         data = np.empty(self.indices.size, dtype=np.float64)
         rhs = np.zeros(self.dof_to_grid.size, dtype=np.float64)
-        _fill_active_matrix_csr_into(
-            self.n,
-            values,
-            self.grid_to_dof,
-            self.dof_to_grid,
-            self.indptr,
-            self.indices,
-            data,
-            rhs,
-            self.p_west,
-            self.p_east,
-        )
+        if self.boundary_mode == "periodic":
+            _fill_periodic_matrix_csr_into(
+                self.n,
+                values,
+                self.grid_to_dof,
+                self.dof_to_grid,
+                self.indptr,
+                self.indices,
+                data,
+                rhs,
+                self.pressure_gradient,
+            )
+        else:
+            _fill_active_matrix_csr_into(
+                self.n,
+                values,
+                self.grid_to_dof,
+                self.dof_to_grid,
+                self.indptr,
+                self.indices,
+                data,
+                rhs,
+                self.p_west,
+                self.p_east,
+            )
         matrix = csr_matrix(
             (data, self.indices, self.indptr),
             shape=(self.dof_to_grid.size, self.dof_to_grid.size),
@@ -590,13 +804,27 @@ class PreparedCartesianProblem:
             rtol=rtol,
             preconditioner=preconditioner,
         )
-        pressure = reconstruct_full_solution(
-            values.shape, result.solution, self.dof_to_grid
-        )
-        flux_x, flux_y = _calculate_face_fluxes_numba(
-            values, pressure, self.p_west, self.p_east
-        )
-        flux = _cell_flux_from_faces_numba(values, flux_x, flux_y)
+        if self.boundary_mode == "periodic":
+            pressure = _reconstruct_periodic_pressure(
+                values.shape,
+                result.solution,
+                self.dof_to_grid,
+                self.component_labels,
+            )
+            flux_x, flux_y = _calculate_periodic_face_fluxes_numba(
+                values, pressure, self.pressure_gradient
+            )
+            flux = _cell_flux_from_periodic_faces_numba(
+                values, flux_x, flux_y
+            )
+        else:
+            pressure = reconstruct_full_solution(
+                values.shape, result.solution, self.dof_to_grid
+            )
+            flux_x, flux_y = _calculate_face_fluxes_numba(
+                values, pressure, self.p_west, self.p_east
+            )
+            flux = _cell_flux_from_faces_numba(values, flux_x, flux_y)
         return values, pressure, flux, result
 
     def solve(
@@ -615,33 +843,57 @@ class PreparedCartesianProblem:
         return values, pressure, flux
 
 
-def prepare_fluid_problem(gaps, *, p_west=0.0, p_east=1.0):
-    """Prepare reusable Cartesian connectivity, mappings, and CSR topology."""
+def prepare_fluid_problem(
+    gaps,
+    *,
+    boundary_mode="pressure",
+    pressure_gradient=1.0,
+    p_west=0.0,
+    p_east=1.0,
+):
+    """Prepare reusable Cartesian connectivity, mappings, and CSR topology.
+
+    ``boundary_mode='pressure'`` uses west/east reservoirs.  In ``'periodic'``
+    mode both axes are periodic and ``pressure_gradient`` is
+    ``G = -mean(dp/dx)``.
+    """
     values = validate_gap_array(
         gaps,
         geometry="Cartesian",
         require_square=True,
         minimum_shape=(2, 2),
     )
-    if not np.isfinite(p_west) or not np.isfinite(p_east):
-        raise ValueError("Reservoir pressures must be finite.")
-    filtered = connectivity_analysis(values)
-    if filtered is None:
-        return None
-    grid_to_dof, dof_to_grid = build_active_mapping(filtered)
-    counts = _count_active_matrix_entries(
-        values.shape[0], grid_to_dof, dof_to_grid
+    boundary_mode = _validate_cartesian_boundary_parameters(
+        boundary_mode, pressure_gradient, p_west, p_east
     )
-    indptr = indptr_from_counts(counts)
-    indices, _, _ = _fill_active_matrix_csr(
-        values.shape[0],
-        filtered,
-        grid_to_dof,
-        dof_to_grid,
-        indptr,
-        p_west,
-        p_east,
-    )
+    component_labels = None
+    if boundary_mode == "periodic":
+        topology = _periodic_topology(values)
+        if topology is None:
+            return None
+        component_labels, grid_to_dof, dof_to_grid = topology
+        filtered = values.copy()
+        indptr, indices = _periodic_structure(
+            filtered, grid_to_dof, dof_to_grid
+        )
+    else:
+        filtered = connectivity_analysis(values)
+        if filtered is None:
+            return None
+        grid_to_dof, dof_to_grid = build_active_mapping(filtered)
+        counts = _count_active_matrix_entries(
+            values.shape[0], grid_to_dof, dof_to_grid
+        )
+        indptr = indptr_from_counts(counts)
+        indices, _, _ = _fill_active_matrix_csr(
+            values.shape[0],
+            filtered,
+            grid_to_dof,
+            dof_to_grid,
+            indptr,
+            p_west,
+            p_east,
+        )
     return PreparedCartesianProblem(
         n=values.shape[0],
         original_open_mask=(values > 0.0).copy(),
@@ -652,6 +904,9 @@ def prepare_fluid_problem(gaps, *, p_west=0.0, p_east=1.0):
         indices=indices,
         p_west=p_west,
         p_east=p_east,
+        boundary_mode=boundary_mode,
+        pressure_gradient=pressure_gradient,
+        component_labels=component_labels,
     )
 
 def solve_fluid_problem(
@@ -660,9 +915,17 @@ def solve_fluid_problem(
     rtol=None,
     save_matrix=False,
     save_matrix_type="coo",
+    boundary_mode="pressure",
+    pressure_gradient=1.0,
     p_west=0.0,
     p_east=1.0,
 ):
+    """Solve the Cartesian Reynolds flow problem.
+
+    Periodic mode returns the component-wise zero-mean fluctuation in
+    ``p = -pressure_gradient*x + pressure``.  Positive gradients drive flow
+    in the positive axis-0 direction.
+    """
     logger.info("Starting fluid solver.")
 
     gaps = validate_gap_array(
@@ -672,6 +935,42 @@ def solve_fluid_problem(
         minimum_shape=(2, 2),
     )
     n = gaps.shape[0]
+    boundary_mode = _validate_cartesian_boundary_parameters(
+        boundary_mode, pressure_gradient, p_west, p_east
+    )
+
+    if boundary_mode == "periodic":
+        prepared = prepare_fluid_problem(
+            gaps,
+            boundary_mode=boundary_mode,
+            pressure_gradient=pressure_gradient,
+        )
+        if prepared is None:
+            logger.info("No x-winding path found. Returning None.")
+            return None, None, None
+        if save_matrix:
+            matrix, rhs, _ = prepared.assemble(gaps)
+            if save_matrix_type == "coo":
+                matrix_to_save = matrix.tocoo()
+            elif save_matrix_type == "csr":
+                matrix_to_save = matrix.tocsr()
+            elif save_matrix_type == "csc":
+                matrix_to_save = matrix.tocsc()
+            else:
+                logger.warning(
+                    "Unknown save_matrix_type: %s, defaulting to 'coo'.",
+                    save_matrix_type,
+                )
+                matrix_to_save = matrix.tocoo()
+            save_npz(
+                "transport_matrix.npz", matrix_to_save, compressed=True
+            )
+            np.savez_compressed("transport_rhs.npz", b=rhs)
+        return prepared.solve(
+            gaps,
+            solver=solver,
+            rtol=DEFAULT_RTOL if rtol is None else rtol,
+        )
 
     logger.info("Checking connectivity.")
 
@@ -718,8 +1017,8 @@ def get_preconditioner(A, method="amg-rs"):
     return build_amg_preconditioner(A, aliases.get(method, method))
 
 # Total flux calculation
-def compute_total_flux(filtered_gaps, flux, N0):
-    """Integrate exact boundary-face flux stored in the boundary cells."""
+def compute_total_flux(filtered_gaps, flux, N0, boundary_mode="pressure"):
+    """Integrate reservoir or periodic-cell cross-section flux."""
     filtered_gaps = np.asarray(filtered_gaps)
     flux = np.asarray(flux)
     if filtered_gaps.ndim != 2 or flux.shape != filtered_gaps.shape + (2,):
@@ -732,6 +1031,7 @@ def compute_total_flux(filtered_gaps, flux, N0):
         )
     if N0 < 1:
         raise ValueError("N0 must be positive.")
+    boundary_mode = _normalize_boundary_mode(boundary_mode)
     dy = 1.0 / N0
 
     flux_inlet = 0.0
@@ -752,8 +1052,18 @@ def compute_total_flux(filtered_gaps, flux, N0):
     flux_conservation_error = abs(flux_inlet - flux_outlet) / max(Q_total, 1e-15)
 
     logger.info("> Flux computation <")
-    logger.info(f"Inlet flux (x=0):     {flux_inlet:.6e} [Active cells: {active_inlet_cells}]")
-    logger.info(f"Outlet flux (x=1):    {flux_outlet:.6e} [Active cells: {active_outlet_cells}]")
+    first_name = (
+        "First periodic section"
+        if boundary_mode == "periodic"
+        else "Inlet flux (x=0)"
+    )
+    last_name = (
+        "Last periodic section"
+        if boundary_mode == "periodic"
+        else "Outlet flux (x=1)"
+    )
+    logger.info(f"{first_name}:     {flux_inlet:.6e} [Active cells: {active_inlet_cells}]")
+    logger.info(f"{last_name}:    {flux_outlet:.6e} [Active cells: {active_outlet_cells}]")
     logger.info(f"Total average flux (Q_total): {Q_total:.6e}")
     logger.info(f"Conservation error:   {flux_conservation_error:.2e} ({flux_conservation_error*100:.2f}%)")
 
@@ -779,6 +1089,14 @@ def warmup_numba_functions():
     )
     flux_x, flux_y = _calculate_face_fluxes_numba(gaps, pressure)
     _cell_flux_from_faces_numba(gaps, flux_x, flux_y)
+    periodic = prepare_fluid_problem(gaps, boundary_mode="periodic")
+    periodic.assemble(gaps)
+    periodic_flux_x, periodic_flux_y = _calculate_periodic_face_fluxes_numba(
+        gaps, np.zeros_like(gaps), 1.0
+    )
+    _cell_flux_from_periodic_faces_numba(
+        gaps, periodic_flux_x, periodic_flux_y
+    )
     logger.info("Cartesian Numba kernels warmed up.")
 
 

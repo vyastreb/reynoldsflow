@@ -32,10 +32,12 @@ div(g³ grad(p)) = 0.
 ```
 
 The Cartesian discretization is cell-centered on the unit square. Axis 0 is
-the transport direction, axis 1 is periodic, and reservoir pressures are
-applied at the west and east boundary faces. Internal face conductivity is the
-harmonic mean of adjacent `g³` values. Cells with `g = 0` are impermeable;
-negative or non-finite gaps are invalid input.
+the transport direction and axis 1 is periodic. By default, reservoir
+pressures are applied at the west and east boundary faces. A representative
+cell mode makes both axes periodic and prescribes the macroscopic pressure
+gradient. Internal face conductivity is the harmonic mean of adjacent `g³`
+values. Cells with `g = 0` are impermeable; negative or non-finite gaps are
+invalid input.
 
 The polar solver discretizes the corresponding conservative annular operator
 on `(r, theta)`, with configurable radial pressures and periodic or symmetry
@@ -121,6 +123,27 @@ if pressure is not None:
 non-percolating field returns `(None, None, None)`; invalid data and solver
 failures raise explicit exceptions. The default iterative tolerance is
 `rtol=1e-12`.
+
+For a Cartesian representative cell driven by
+`G = -mean(dp/dx)`, use:
+
+```python
+filtered_gaps, pressure_fluctuation, flux = transport.solve_fluid_problem(
+    gaps,
+    solver="auto",
+    boundary_mode="periodic",
+    pressure_gradient=1.0,
+)
+```
+
+Both axes are periodic in this mode and positive `pressure_gradient` drives
+positive axis-0 flow. The returned pressure is the periodic fluctuation in
+`p = -G*x + pressure_fluctuation`, normalized to zero mean separately on each
+connected fluid component. Non-winding fluid pockets are retained and carry
+zero net flux. If no component winds around axis 0, the solve returns the
+normal `(None, None, None)` no-percolation result. `p_west` and `p_east` cannot
+be combined with periodic mode. The same options are accepted by
+`prepare_fluid_problem` for fixed-topology sequences.
 
 For annular domains, use
 `reynoldsflow.transport_polar.solve_fluid_problem_polar`.
