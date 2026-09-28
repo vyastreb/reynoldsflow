@@ -444,12 +444,12 @@ def _periodic_topology(g):
         return None
     component_count = winding.size - 1
     anchors = _strong_component_anchors(labels, g, component_count)
-    flat_labels = labels.ravel()
-    free_mask = (flat_labels > 0)
+    winding_mask = winding[labels]
+    free_mask = winding_mask.ravel().copy()
     free_mask[anchors[1:]] = False
     free_gaps = np.where(free_mask.reshape(g.shape), g, 0.0)
     grid_to_dof, dof_to_grid = build_active_mapping(free_gaps)
-    return labels, grid_to_dof, dof_to_grid
+    return labels, winding_mask, grid_to_dof, dof_to_grid
 
 
 def _periodic_structure(g, grid_to_dof, dof_to_grid):
@@ -868,7 +868,8 @@ def prepare_fluid_problem(
 
     ``boundary_mode='pressure'`` uses west/east reservoirs.  In ``'periodic'``
     mode both axes are periodic and ``pressure_gradient`` is
-    ``G = -mean(dp/dx)``.
+    ``G = -mean(dp/dx)``. Only components winding around the driven axis
+    are retained.
     """
     values = validate_gap_array(
         gaps,
@@ -884,8 +885,8 @@ def prepare_fluid_problem(
         topology = _periodic_topology(values)
         if topology is None:
             return None
-        component_labels, grid_to_dof, dof_to_grid = topology
-        filtered = values.copy()
+        component_labels, winding_mask, grid_to_dof, dof_to_grid = topology
+        filtered = np.where(winding_mask, values, 0.0)
         indptr, indices = _periodic_structure(
             filtered, grid_to_dof, dof_to_grid
         )

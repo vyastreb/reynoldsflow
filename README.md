@@ -170,11 +170,11 @@ filtered_gaps, pressure_fluctuation, flux = transport.solve_fluid_problem(
 Both axes are periodic in this mode and positive `pressure_gradient` drives
 positive axis-0 flow. The returned pressure is the periodic fluctuation in
 `p = -G*x + pressure_fluctuation`, normalized to zero mean separately on each
-connected fluid component. Non-winding fluid pockets are retained and carry
-zero net flux. If no component winds around axis 0, the solve returns the
-normal `(None, None, None)` no-percolation result. `p_west` and `p_east` cannot
-be combined with periodic mode. The same options are accepted by
-`prepare_fluid_problem` for fixed-topology sequences.
+retained winding component. Non-winding fluid pockets are removed from the
+filtered gaps and sparse system. If no component winds around axis 0, the
+solve returns the normal `(None, None, None)` no-percolation result. `p_west`
+and `p_east` cannot be combined with periodic mode. The same options are
+accepted by `prepare_fluid_problem` for fixed-topology sequences.
 
 For annular domains, use
 `reynoldsflow.transport_polar.solve_fluid_problem_polar`.

@@ -75,7 +75,7 @@ def test_heterogeneous_periodic_flux_is_conservative_and_matrix_is_symmetric():
     assert np.ptp(flux_x[:-1].sum(axis=1) / n) < 2e-13
 
 
-def test_periodic_pockets_are_retained_gauged_and_carry_no_flux():
+def test_periodic_pockets_are_filtered_and_carry_no_flux():
     n = 10
     gaps = np.zeros((n, n))
     gaps[:, 2] = 1.0
@@ -91,11 +91,46 @@ def test_periodic_pockets_are_retained_gauged_and_carry_no_flux():
     labels, winding = label_periodic_components(gaps)
     pocket_label = int(labels[0, 7])
 
-    assert_array_equal(filtered, gaps)
+    expected = np.zeros_like(gaps)
+    expected[:, 2] = 1.0
+    assert_array_equal(filtered, expected)
     assert not winding[pocket_label]
-    for component in range(1, int(labels.max()) + 1):
-        assert_allclose(pressure[labels == component].mean(), 0.0, atol=1e-14)
+    assert_allclose(pressure[filtered > 0.0].mean(), 0.0, atol=1e-14)
+    assert_allclose(pressure[labels == pocket_label], 0.0, atol=1e-14)
     assert_allclose(flux[labels == pocket_label], 0.0, atol=1e-13)
+    prepared = prepare_fluid_problem(gaps, boundary_mode="periodic")
+    assert_array_equal(prepared.spanning_mask, expected > 0.0)
+    assert prepared.dof_to_grid.size == n - 1
+
+
+def test_periodic_filter_keeps_all_independent_winding_channels():
+    n = 10
+    gaps = np.zeros((n, n))
+    gaps[:, 2] = 1.0
+    gaps[:, 5] = 0.7
+    gaps[0, 8] = 0.6
+    gaps[-1, 8] = 0.6
+
+    filtered, pressure, flux = solve_fluid_problem(
+        gaps,
+        solver="scipy-spsolve",
+        boundary_mode="periodic",
+        pressure_gradient=1.0,
+    )
+
+    expected = np.zeros_like(gaps)
+    expected[:, 2] = 1.0
+    expected[:, 5] = 0.7
+    assert_array_equal(filtered, expected)
+    assert_allclose(pressure[filtered > 0.0], 0.0, atol=1e-13)
+    assert_allclose(flux[:, 2, 0], 1.0, atol=1e-13)
+    assert_allclose(flux[:, 5, 0], 0.7**3, atol=1e-13)
+    assert_allclose(flux[:, 8], 0.0, atol=1e-13)
+    total_flux, conservation_error = compute_total_flux(
+        filtered, flux, n, boundary_mode="periodic"
+    )
+    assert_allclose(total_flux, (1.0 + 0.7**3) / n, atol=1e-13)
+    assert conservation_error < 1e-13
 
 
 def test_seam_crossing_pocket_is_not_mistaken_for_x_winding():
