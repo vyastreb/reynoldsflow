@@ -275,6 +275,12 @@ def _solve_once(
                     pass
             ksp.setTolerances(rtol=rtol)
             ksp.setFromOptions()
+            # PETSc otherwise commonly stops on a preconditioned residual
+            # norm.  That norm can differ by orders of magnitude from the
+            # true ||Ax-b||/||b|| used by ReynoldsFlow, especially for the
+            # O(dx)-scaled RHS of periodic macroscopic-gradient problems.
+            # Make PETSc's stopping test match the independently checked norm.
+            ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
             rhs_vector = PETSc.Vec().createWithArray(rhs)
             solution_vector = rhs_vector.duplicate()
             ksp.solve(rhs_vector, solution_vector)
@@ -286,8 +292,11 @@ def _solve_once(
                 f"PETSc solver {solver!r} could not be configured or run: {exc}"
             ) from exc
         if reason <= 0:
+            failed_residual = _relative_residual(matrix_csr, solution, rhs)
             raise ConvergenceError(
-                f"PETSc solver {solver!r} did not converge (reason={reason})."
+                f"PETSc solver {solver!r} did not converge (reason={reason}, "
+                f"iterations={iterations}, true relative residual="
+                f"{failed_residual:.3e})."
             )
         return _checked_result(
             matrix_csr,
@@ -354,7 +363,6 @@ def solve_linear_system(
     normalized = normalize_solver_name(solver)
     if rtol <= 0.0 or not np.isfinite(rtol):
         raise ValueError("rtol must be finite and strictly positive.")
-
     def require_true_residual(result: LinearSolveResult) -> LinearSolveResult:
         if result.iterations is not None:
             limit = max(10.0 * rtol, 100.0 * np.finfo(np.float64).eps)

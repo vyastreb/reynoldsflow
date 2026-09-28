@@ -18,10 +18,11 @@ components, assembles only active degrees of freedom, and reconstructs
 conservative face fluxes from the same conductances used by the linear system.
 
 The package is intended for rough-contact leakage calculations and related
-elliptic transport problems. Version 0.1.2 adds fully periodic Cartesian
-pressure-gradient driving and compatibility with both scikit-sparse 0.4 and
-0.5 while retaining the numerical conservation and solver diagnostics of the
-0.1 series.
+elliptic transport problems. Version 0.1.3 improves PETSc convergence checks
+and periodic pressure-gauge conditioning. Version 0.1.2 added fully periodic
+Cartesian pressure-gradient driving and compatibility with both scikit-sparse
+0.4 and 0.5 while retaining the numerical conservation and solver diagnostics
+of the 0.1 series.
 
 ## Mathematical model
 

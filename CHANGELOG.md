@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.3 — 2026-09-28
+
+### Numerical robustness
+
+- Made PETSc CG use the unpreconditioned residual norm for its stopping test so
+  backend convergence matches ReynoldsFlow's independently checked true
+  residual, including periodic macroscopic-gradient problems with small
+  right-hand sides.
+- Added PETSc iteration and true-residual details to non-convergence errors.
+- Changed each periodic component's pressure gauge from its first indexed cell
+  to its largest-gap cell, avoiding weakly connected anchors in constricted
+  rough channels.
+
+### Homogenization workflow
+
+- Added a restartable rough-surface study driver covering `rfgen` generation,
+  prescribed-pressure and periodic mean-flux problems, Bruggeman estimates,
+  ensemble statistics, and normalized/raw/RMS plotting.
+- Added fixed-`k2/k1` representative-volume sequences, explicit grid-resolution
+  metadata, semilog normalized plots, and detailed reproduction and modeling
+  caveats.
+- Raised the development `rfgen` requirement to 0.2.3.
+
+### Tests
+
+- Added deterministic coverage for strongest-cell periodic gauges and the
+  homogenization study's contact, seed, bandwidth, RMS-error, and Bruggeman
+  helpers.
+
 ## 0.1.2 — 2026-07-12
 
 ### Periodic Cartesian flow

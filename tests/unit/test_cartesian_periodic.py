@@ -7,6 +7,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 from reynoldsflow._connectivity import label_periodic_components
 from reynoldsflow.transport import (
     _calculate_periodic_face_fluxes_numba,
+    _strong_component_anchors,
     compute_total_flux,
     prepare_fluid_problem,
     solve_fluid_problem,
@@ -14,6 +15,15 @@ from reynoldsflow.transport import (
 
 
 pytestmark = pytest.mark.unit
+
+
+def test_periodic_gauge_uses_strongest_cell_in_each_component():
+    labels = np.array([[1, 1, 0], [2, 0, 2]], dtype=np.int32)
+    gaps = np.array([[0.1, 0.9, 0.0], [0.8, 0.0, 0.2]])
+
+    anchors = _strong_component_anchors(labels, gaps, component_count=2)
+
+    assert anchors.tolist() == [-1, 1, 3]
 
 
 @pytest.mark.parametrize("gradient", [0.0, 2.5, -1.75])

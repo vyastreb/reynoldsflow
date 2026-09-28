@@ -423,15 +423,28 @@ def _fill_periodic_matrix_csr_into(
         rhs[row] = pressure_gradient * dx * (k_west - k_east)
 
 
+@njit
+def _strong_component_anchors(labels, gaps, component_count):
+    """Choose one well-connected gauge cell per periodic component."""
+    anchors = np.full(component_count + 1, -1, dtype=np.int64)
+    maximum_gaps = np.full(component_count + 1, -np.inf, dtype=np.float64)
+    flat_labels = labels.ravel()
+    flat_gaps = gaps.ravel()
+    for index in range(flat_labels.size):
+        component = int(flat_labels[index])
+        if component > 0 and flat_gaps[index] > maximum_gaps[component]:
+            maximum_gaps[component] = flat_gaps[index]
+            anchors[component] = index
+    return anchors
+
+
 def _periodic_topology(g):
     labels, winding = label_periodic_components(g)
     if not np.any(winding):
         return None
     component_count = winding.size - 1
-    anchors = np.full(component_count + 1, -1, dtype=np.int64)
+    anchors = _strong_component_anchors(labels, g, component_count)
     flat_labels = labels.ravel()
-    components, first_indices = np.unique(flat_labels, return_index=True)
-    anchors[components] = first_indices
     free_mask = (flat_labels > 0)
     free_mask[anchors[1:]] = False
     free_gaps = np.where(free_mask.reshape(g.shape), g, 0.0)
@@ -938,7 +951,6 @@ def solve_fluid_problem(
     boundary_mode = _validate_cartesian_boundary_parameters(
         boundary_mode, pressure_gradient, p_west, p_east
     )
-
     if boundary_mode == "periodic":
         prepared = prepare_fluid_problem(
             gaps,
